@@ -57,14 +57,11 @@ function showSuggestions(list) {
   for (let i=0;i<list.length;i++) {
     const it = list[i];
     const li = document.createElement('li');
-    // show zip code when available
-    const zip = it.zip ? ` • ZIP: ${it.zip}` : '';
-    li.textContent = (it.display || it.name) + zip;
+    li.textContent = it.display || it.name;
     li.tabIndex = 0;
     li.setAttribute('role','option');
     li.dataset.lat = it.lat;
     li.dataset.lon = it.lon;
-    if (it.zip) li.dataset.zip = it.zip;
     li.dataset.index = i;
     li.addEventListener('click', () => chooseSuggestion(i));
     li.addEventListener('keydown', (e) => { if (e.key === 'Enter') chooseSuggestion(i); });
@@ -280,7 +277,7 @@ function render(resp) {
   const headerHtml = `
     <div class="row">
       <div>
-        <h2>${location.name}${location.country ? ', ' + location.country : ''}${location.zip ? ' • ZIP: ' + location.zip : ''}</h2>
+        <h2>${location.name}${location.country ? ', ' + location.country : ''}</h2>
         <p class="big">${tempVal}</p>
         <p class="desc">${desc}</p>
         <div class="meta">${feelsVal ? `Cítí se jako ${feelsVal} • ` : ''}Vlhkost ${humidityVal} • Vítr ${windVal}</div>
