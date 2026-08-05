@@ -112,16 +112,16 @@ app.get('/api/weather', async (req, res) => {
   if (!city && !(latQ && lonQ)) return res.status(400).json({ error: 'Město nebo souřadnice jsou povinné' });
 
   try {
-    let lat, lon, name, country;
+    let lat, lon, name, country, zip = null;
 
     if (latQ && lonQ) {
       lat = parseFloat(latQ); lon = parseFloat(lonQ);
-      // try reverse geocode to get name/country
+      // try reverse geocode to get name/country/zip
       try {
         const revUrl = 'http://api.openweathermap.org/geo/1.0/reverse';
         const revResp = await axios.get(revUrl, { params: { lat, lon, limit: 1, appid: API_KEY } });
         const place = revResp.data && revResp.data[0];
-        if (place) { name = place.name; country = place.country; }
+        if (place) { name = place.name; country = place.country; zip = place.postal_code || place.zip || place.postcode || null; }
       } catch (e) { /* ignore reverse errors */ }
       // fallback name from query if provided
       if (!name && city) name = city;
@@ -131,7 +131,7 @@ app.get('/api/weather', async (req, res) => {
       const geoResp = await axios.get(geoUrl, { params: { q: city, limit: 1, appid: API_KEY } });
       const place = geoResp.data && geoResp.data[0];
       if (!place) return res.status(404).json({ error: 'Město nebylo nalezeno' });
-      lat = place.lat; lon = place.lon; name = place.name; country = place.country;
+      lat = place.lat; lon = place.lon; name = place.name; country = place.country; zip = place.postal_code || place.zip || place.postcode || null;
     }
 
     // 2) Current weather
@@ -152,7 +152,7 @@ app.get('/api/weather', async (req, res) => {
       // ignore air pollution errors
     }
 
-    res.json({ location: { name, country, lat, lon }, current: curResp.data, forecast: fResp.data, air });
+    res.json({ location: { name, country, lat, lon, zip }, current: curResp.data, forecast: fResp.data, air });
   } catch (err) {
     console.error('Weather error', err.response?.data || err.message || err);
     const msg = err.response?.data?.message || err.message;

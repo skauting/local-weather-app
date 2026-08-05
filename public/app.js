@@ -280,7 +280,7 @@ function render(resp) {
   const headerHtml = `
     <div class="row">
       <div>
-        <h2>${location.name}${location.country ? ', ' + location.country : ''}</h2>
+        <h2>${location.name}${location.country ? ', ' + location.country : ''}${location.zip ? ' • ZIP: ' + location.zip : ''}</h2>
         <p class="big">${tempVal}</p>
         <p class="desc">${desc}</p>
         <div class="meta">${feelsVal ? `Cítí se jako ${feelsVal} • ` : ''}Vlhkost ${humidityVal} • Vítr ${windVal}</div>
