@@ -12,6 +12,19 @@ let selectedIndex = -1;
 let selectedLat = null;
 let selectedLon = null;
 
+// Auth / usage (client-side mock)
+const USAGE_KEY = 'freeUsageCount';
+const USER_KEY = 'mockUser';
+const FREE_LIMIT = 5;
+let freeUsage = parseInt(localStorage.getItem(USAGE_KEY) || '0', 10);
+let currentUser = JSON.parse(localStorage.getItem(USER_KEY) || 'null');
+function saveUsage(){ localStorage.setItem(USAGE_KEY, String(freeUsage)); updateUsageUI(); }
+function saveUser(){ localStorage.setItem(USER_KEY, JSON.stringify(currentUser)); updateMenuUI(); }
+function resetUsage(){ freeUsage = 0; saveUsage(); }
+function updateUsageUI(){ document.getElementById('usageCount').textContent = freeUsage; }
+function updateMenuUI(){ const logoutBtn = document.getElementById('logoutBtn'); const menuBtn = document.getElementById('menuBtn'); if (currentUser && currentUser.name){ menuBtn.textContent = currentUser.name + ' ▾'; logoutBtn.classList.remove('hidden'); } else { menuBtn.textContent = 'Přihlásit / Registrovat ▾'; logoutBtn.classList.add('hidden'); } }
+
+
 function debounce(fn, wait = 300) {
   let t;
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), wait); };
@@ -69,6 +82,110 @@ cityInput.addEventListener('input', (e) => {
   selectedLat = selectedLon = null; // reset selected coords on free input
   suggest(e.target.value);
 });
+
+// Hook into auth UI
+const menuBtn = document.getElementById('menuBtn');
+const menuDrop = document.getElementById('menuDrop');
+const openLogin = document.getElementById('openLogin');
+const openRegister = document.getElementById('openRegister');
+const logoutBtn = document.getElementById('logoutBtn');
+const authModal = document.getElementById('authModal');
+const closeAuth = document.getElementById('closeAuth');
+const loginForm = document.getElementById('loginForm');
+const registerForm = document.getElementById('registerForm');
+const planSelect = document.getElementById('planSelect');
+const authMessage = document.getElementById('authMessage');
+
+menuBtn.addEventListener('click', ()=>{ const expanded = menuBtn.getAttribute('aria-expanded') === 'true'; menuBtn.setAttribute('aria-expanded', String(!expanded)); menuDrop.classList.toggle('hidden'); });
+openLogin.addEventListener('click', ()=>{ openAuth('login'); });
+openRegister.addEventListener('click', ()=>{ openAuth('register'); });
+logoutBtn.addEventListener('click', ()=>{ currentUser = null; saveUser(); alert('Odhlášeno'); });
+closeAuth.addEventListener('click', ()=>{ authModal.classList.add('hidden'); loginForm.classList.add('hidden'); registerForm.classList.add('hidden'); planSelect.classList.add('hidden'); });
+
+function openAuth(kind){ authModal.classList.remove('hidden'); loginForm.classList.add('hidden'); registerForm.classList.add('hidden'); planSelect.classList.add('hidden'); if (kind === 'login'){ loginForm.classList.remove('hidden'); } else if (kind === 'register'){ registerForm.classList.remove('hidden'); } }
+
+// do register/login (mock)
+document.getElementById('doLogin').addEventListener('click', ()=>{
+  const email = document.getElementById('loginEmail').value || 'user@example.com';
+  currentUser = { name: email.split('@')[0], email, plan: null };
+  saveUser(); resetUsage(); authModal.classList.add('hidden'); alert('Přihlášeno (mock)');
+});
+
+document.getElementById('doRegister').addEventListener('click', ()=>{
+  const name = document.getElementById('regName').value || 'user';
+  const email = document.getElementById('regEmail').value || 'user@example.com';
+  currentUser = { name, email, plan: null };
+  saveUser(); // after register, ask to choose plan
+  loginForm.classList.add('hidden'); registerForm.classList.add('hidden'); planSelect.classList.remove('hidden');
+});
+
+Array.from(document.getElementsByClassName('planBtn')).forEach(b=>{
+  b.addEventListener('click', (e)=>{
+    const p = e.target.dataset.plan || 'basic';
+    if (!currentUser) currentUser = { name: 'user', email:'', plan: p };
+    currentUser.plan = p;
+    saveUser(); authModal.classList.add('hidden'); alert('Děkujeme — plán zvolen (mock).');
+  });
+});
+
+// initialize UI
+updateUsageUI(); updateMenuUI();
+
+// Usage enforcement: before submit, check limit and increment
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const city = cityInput.value.trim();
+  if (!city) return;
+
+  // if not logged in, check free usage
+  if (!currentUser) {
+    if (freeUsage >= FREE_LIMIT) {
+      // show modal prompting registration/plan
+      authMessage.textContent = 'Bez registrace je možné provést pouze 5 dotazů. Prosím zaregistrujte se a zvolte plán.';
+      openAuth('register');
+      return;
+    } else {
+      freeUsage += 1; saveUsage();
+      // show small note in result area about which attempt
+      const attemptText = `Toto je ${freeUsage}. pokus z ${FREE_LIMIT} (zdarma)`;
+      resultEl.innerHTML = `<div class="meta">${attemptText}</div>`;
+      resultEl.classList.remove('hidden');
+    }
+  }
+
+  // proceed with fetch
+  resultEl.classList.add('hidden');
+  errorEl.classList.add('hidden');
+  rawEl.classList.add('hidden');
+  resultEl.innerHTML = '<div class="loading">Načítám…</div>';
+  resultEl.classList.remove('hidden');
+
+  try {
+    let url;
+    if (selectedLat && selectedLon) {
+      url = `/api/weather?lat=${encodeURIComponent(selectedLat)}&lon=${encodeURIComponent(selectedLon)}&name=${encodeURIComponent(city)}`;
+    } else {
+      // try to match one suggestion exactly
+      const match = suggestions.find(s => (s.display || s.name).toLowerCase() === city.toLowerCase());
+      if (match) url = `/api/weather?lat=${encodeURIComponent(match.lat)}&lon=${encodeURIComponent(match.lon)}&name=${encodeURIComponent(city)}`;
+      else url = `/api/weather?city=${encodeURIComponent(city)}`;
+    }
+
+    const res = await fetch(url);
+    if (!res.ok) {
+      const err = await res.json().catch(()=>({ error: 'Chyba serveru' }));
+      throw new Error(err.error || 'Chyba při dotazu');
+    }
+    const resp = await res.json();
+    latestRaw = resp;
+    render(resp);
+  } catch (err) {
+    resultEl.classList.add('hidden');
+    errorEl.textContent = err.message || 'Neznámá chyba';
+    errorEl.classList.remove('hidden');
+  }
+});
+
 
 cityInput.addEventListener('keydown', (e) => {
   const visible = !suggestionsEl.classList.contains('hidden');

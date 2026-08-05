@@ -32,6 +32,29 @@ button:hover{transform:translateY(-1px)}
 .muted{background:transparent;border:1px solid #eef2ff;padding:6px 10px;border-radius:8px;color:var(--muted);cursor:pointer}
 .error{margin-top:8px;color:#b91c1c;background:#fff1f2;padding:10px;border-radius:8px;border:1px solid #fecaca}
 .foot{margin-top:14px;color:var(--muted);font-size:13px;text-align:right}
+
+.header-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.right-area{display:flex;align-items:center;gap:12px}
+.usage{font-size:14px;color:var(--muted)}
+
+.menu{position:relative}
+.menu button{background:transparent;border:1px solid #eef2ff;padding:6px 10px;border-radius:8px;color:var(--muted);cursor:pointer}
+.dropdown{position:absolute;right:0;top:calc(100% + 8px);background:#fff;border:1px solid #eef2ff;border-radius:8px;box-shadow:0 8px 24px rgba(16,24,40,0.08);padding:6px;z-index:60}
+.menu-item{display:block;background:transparent;border:none;padding:8px 10px;text-align:left;width:100%;cursor:pointer}
+.menu-item:hover{background:#f8fafc}
+
+/* Modal */
+.modal{position:fixed;inset:0;background:rgba(7,11,20,0.5);display:flex;align-items:center;justify-content:center;padding:20px;z-index:100}
+.modal-content{background:#fff;padding:18px;border-radius:10px;max-width:520px;width:100%;position:relative}
+.modal-close{position:absolute;right:10px;top:6px;border:none;background:transparent;font-size:22px;cursor:pointer}
+.auth-form{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.auth-form input{padding:8px;border:1px solid #e6e9ef;border-radius:8px}
+.auth-message{font-size:14px;color:var(--muted)}
+.planBtn{background:var(--accent);color:#fff;border:none;padding:8px 10px;border-radius:8px;cursor:pointer;margin-top:8px}
+
+/* ensure modal hidden state keeps it non-interactive */
+.modal.hidden{display:none}
+.dropdown.hidden{display:none}
 .loading{color:var(--muted)}
 .icon img{width:72px;height:72px}
 

@@ -8,11 +8,24 @@
 </head>
 <body>
   <main class="card">
-    <h1>Aktuální počasí</h1>
+    <div class="header-row">
+      <h1>Aktuální počasí</h1>
+      <div class="right-area">
+        <div id="usage" class="usage">Pokus: <span id="usageCount">0</span>/5</div>
+        <div class="menu" id="menu">
+          <button id="menuBtn" aria-haspopup="true" aria-expanded="false">Přihlásit / Registrovat ▾</button>
+          <div id="menuDrop" class="dropdown hidden" role="menu">
+            <button id="openLogin" class="menu-item" role="menuitem">Přihlásit se</button>
+            <button id="openRegister" class="menu-item" role="menuitem">Registrovat</button>
+            <button id="logoutBtn" class="menu-item hidden" role="menuitem">Odhlásit</button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <form id="form" autocomplete="off">
       <div class="autocomplete">
-        <input id="city" name="city" placeholder="Zadejte město (např. Praha)" required autofocus autocomplete="off" aria-autocomplete="list" aria-controls="suggestions" />
+        <input id="city" name="city" placeholder="Zadejte město (např. Praha)" required autocomplete="off" aria-autocomplete="list" aria-controls="suggestions" />
         <ul id="suggestions" class="suggestions hidden" role="listbox" aria-label="Návrhy měst"></ul>
       </div>
       <button type="submit">Hledat</button>
@@ -28,6 +41,39 @@
     <pre id="raw" class="raw hidden"></pre>
 
     <footer class="foot">Lokální server • Data od OpenWeather</footer>
+
+    <!-- Auth modal (mock) -->
+    <div id="authModal" class="modal hidden" role="dialog" aria-modal="true">
+      <div class="modal-content">
+        <button id="closeAuth" class="modal-close">×</button>
+        <div class="auth-forms">
+          <div id="authMessage" class="auth-message">Chcete pokračovat? Zdarma je možné provést 5 dotazů. Po překročení se musíte zaregistrovat a zvolit plán.</div>
+
+          <div id="loginForm" class="auth-form hidden">
+            <h3>Přihlásit se (mock)</h3>
+            <input id="loginEmail" placeholder="Email" />
+            <input id="loginPassword" type="password" placeholder="Heslo" />
+            <button id="doLogin">Přihlásit</button>
+          </div>
+
+          <div id="registerForm" class="auth-form hidden">
+            <h3>Registrovat (mock)</h3>
+            <input id="regName" placeholder="Jméno" />
+            <input id="regEmail" placeholder="Email" />
+            <input id="regPassword" type="password" placeholder="Heslo" />
+            <button id="doRegister">Registrovat a zvolit plán</button>
+          </div>
+
+          <div id="planSelect" class="auth-form hidden">
+            <h3>Zvolit plán (mock)</h3>
+            <p>Vyberte plán — po výběru budete považováni za přihlášeného uživatele.</p>
+            <button class="planBtn" data-plan="basic">Basic (placený) — 99 Kč/měs</button>
+            <button class="planBtn" data-plan="pro">Pro (placený) — 199 Kč/měs</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </main>
 
   <script src="app.js"></script>
