@@ -1,0 +1,35 @@
+﻿<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Počasí</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="card">
+    <h1>Počasí</h1>
+
+    <form id="form" autocomplete="off">
+      <div class="autocomplete">
+        <input id="city" name="city" placeholder="Zadejte město (např. Praha)" required autofocus autocomplete="off" aria-autocomplete="list" aria-controls="suggestions" />
+        <ul id="suggestions" class="suggestions hidden" role="listbox" aria-label="Návrhy měst"></ul>
+      </div>
+      <button type="submit">Hledat</button>
+    </form>
+
+    <div id="result" class="result hidden" aria-live="polite"></div>
+    <div id="error" class="error hidden" role="alert"></div>
+
+    <div class="controls">
+      <button id="toggleRaw" class="muted">Zobrazit surová data</button>
+    </div>
+
+    <pre id="raw" class="raw hidden"></pre>
+
+    <footer class="foot">Lokální server • Data od OpenWeather</footer>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
