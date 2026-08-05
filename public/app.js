@@ -131,6 +131,17 @@ Array.from(document.getElementsByClassName('planBtn')).forEach(b=>{
 // initialize UI
 updateUsageUI(); updateMenuUI();
 
+// Reset button handler (clear usage)
+const resetBtn = document.getElementById('resetBtn');
+if (resetBtn) {
+  resetBtn.addEventListener('click', ()=>{
+    if (confirm('Opravdu chcete resetovat počet pokusů na 0?')){
+      resetUsage();
+      alert('Počet pokusů byl resetován. Máte opět 5 volných dotazů.');
+    }
+  });
+}
+
 // Usage enforcement: before submit, check limit and increment
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
