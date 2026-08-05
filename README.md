@@ -4,9 +4,9 @@ Instrukce k spuštění lokální aplikace počasí
    npm install
 
 2) Nastavit OpenWeather API klíč (Windows PowerShell):
-   $env:OPENWEATHER_API_KEY = "9f0aa1f4fa8d4696c01c2e8dbea9acad"
+   $env:OPENWEATHER_API_KEY = "<vas-api-klic>"
 
-   (nebo pro cmd.exe: set OPENWEATHER_API_KEY=9f0aa1f4fa8d4696c01c2e8dbea9acad)
+   (nebo pro cmd.exe: set OPENWEATHER_API_KEY=<vas-api-klic>)
 
 3) Spustit server
    npm start

@@ -11,29 +11,61 @@ let suggestions = [];
 let selectedIndex = -1;
 let selectedLat = null;
 let selectedLon = null;
+let selectedName = null;
 
-// Auth / usage (client-side mock)
-const USAGE_KEY = 'freeUsageCount';
-const USER_KEY = 'mockUser';
-const FREE_LIMIT = 5;
-let freeUsage = parseInt(localStorage.getItem(USAGE_KEY) || '0', 10);
-let currentUser = JSON.parse(localStorage.getItem(USER_KEY) || 'null');
-function saveUsage(){ localStorage.setItem(USAGE_KEY, String(freeUsage)); updateUsageUI(); }
-function saveUser(){ localStorage.setItem(USER_KEY, JSON.stringify(currentUser)); updateMenuUI(); }
-function resetUsage(){ freeUsage = 0; saveUsage(); }
-function updateUsageUI(){ document.getElementById('usageCount').textContent = freeUsage; }
+// Auth / usage state mirrors the server session; the server stays authoritative.
+let freeUsage = 0;
+let freeLimit = 5;
+let currentUser = null;
+
+function applyUsage(usage) {
+  if (!usage) return;
+  if (typeof usage.count === 'number') freeUsage = usage.count;
+  if (typeof usage.limit === 'number') freeLimit = usage.limit;
+  currentUser = usage.user || null;
+  updateUsageUI();
+  updateMenuUI();
+}
+
+async function api(path, options) {
+  const res = await fetch(path, { credentials: 'same-origin', ...options });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(data.error || 'Chyba serveru'), { data, status: res.status });
+  return data;
+}
+
+async function loadUsage() {
+  try { applyUsage(await api('/api/usage')); } catch (e) { /* keep defaults */ }
+}
+
+function updateUsageUI(){
+  document.getElementById('usageCount').textContent = freeUsage;
+  document.getElementById('usageLimit').textContent = freeLimit;
+  document.getElementById('usage').classList.toggle('hidden', Boolean(currentUser));
+}
 function updateMenuUI(){ const logoutBtn = document.getElementById('logoutBtn'); const menuBtn = document.getElementById('menuBtn'); if (currentUser && currentUser.name){ menuBtn.textContent = currentUser.name + ' ▾'; logoutBtn.classList.remove('hidden'); } else { menuBtn.textContent = 'Přihlásit / Registrovat ▾'; logoutBtn.classList.add('hidden'); } }
 
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
 
 function debounce(fn, wait = 300) {
   let t;
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), wait); };
 }
 
+let suggestController = null;
+
 async function fetchSuggest(q) {
+  suggestController?.abort();
   if (!q) return showSuggestions([]);
+  const controller = new AbortController();
+  suggestController = controller;
   try {
-    const res = await fetch(`/api/suggest?q=${encodeURIComponent(q)}`);
+    const res = await fetch(`/api/suggest?q=${encodeURIComponent(q)}`, { signal: controller.signal });
     const list = await res.json();
     // dedupe by display (case-insensitive) keeping first (server already scores)
     const map = new Map();
@@ -44,7 +76,7 @@ async function fetchSuggest(q) {
     suggestions = Array.from(map.values());
     showSuggestions(suggestions);
   } catch (e) {
-    showSuggestions([]);
+    if (e.name !== 'AbortError') showSuggestions([]);
   }
 }
 
@@ -75,11 +107,12 @@ function chooseSuggestion(i) {
   if (!it) return;
   cityInput.value = it.display || it.name;
   selectedLat = it.lat; selectedLon = it.lon;
+  selectedName = it.shortName || it.name;
   suggestionsEl.classList.add('hidden');
 }
 
 cityInput.addEventListener('input', (e) => {
-  selectedLat = selectedLon = null; // reset selected coords on free input
+  selectedLat = selectedLon = selectedName = null; // reset selection on free input
   suggest(e.target.value);
 });
 
@@ -99,73 +132,102 @@ const authMessage = document.getElementById('authMessage');
 menuBtn.addEventListener('click', ()=>{ const expanded = menuBtn.getAttribute('aria-expanded') === 'true'; menuBtn.setAttribute('aria-expanded', String(!expanded)); menuDrop.classList.toggle('hidden'); });
 openLogin.addEventListener('click', ()=>{ openAuth('login'); });
 openRegister.addEventListener('click', ()=>{ openAuth('register'); });
-logoutBtn.addEventListener('click', ()=>{ currentUser = null; saveUser(); alert('Odhlášeno'); });
-closeAuth.addEventListener('click', ()=>{ authModal.classList.add('hidden'); loginForm.classList.add('hidden'); registerForm.classList.add('hidden'); planSelect.classList.add('hidden'); });
+logoutBtn.addEventListener('click', async ()=>{
+  try { applyUsage(await api('/api/auth/logout', { method: 'POST' })); alert('Odhlášeno'); }
+  catch (err) { alert(err.message); }
+});
+closeAuth.addEventListener('click', ()=>{ closeAuthModal(); });
 
-function openAuth(kind){ authModal.classList.remove('hidden'); loginForm.classList.add('hidden'); registerForm.classList.add('hidden'); planSelect.classList.add('hidden'); if (kind === 'login'){ loginForm.classList.remove('hidden'); } else if (kind === 'register'){ registerForm.classList.remove('hidden'); } }
+let lastFocusedBeforeModal = null;
 
-// do register/login (mock)
-document.getElementById('doLogin').addEventListener('click', ()=>{
-  const email = document.getElementById('loginEmail').value || 'user@example.com';
-  currentUser = { name: email.split('@')[0], email, plan: null };
-  saveUser(); resetUsage(); authModal.classList.add('hidden'); alert('Přihlášeno (mock)');
+function closeAuthModal(){
+  authModal.classList.add('hidden');
+  loginForm.classList.add('hidden');
+  registerForm.classList.add('hidden');
+  planSelect.classList.add('hidden');
+  lastFocusedBeforeModal?.focus();
+  lastFocusedBeforeModal = null;
+}
+
+function openAuth(kind){
+  lastFocusedBeforeModal = document.activeElement;
+  authModal.classList.remove('hidden');
+  menuDrop.classList.add('hidden');
+  menuBtn.setAttribute('aria-expanded', 'false');
+  loginForm.classList.add('hidden'); registerForm.classList.add('hidden'); planSelect.classList.add('hidden');
+  if (kind === 'login'){ loginForm.classList.remove('hidden'); }
+  else if (kind === 'register'){ registerForm.classList.remove('hidden'); }
+  authModal.querySelector('.auth-form:not(.hidden) input')?.focus();
+}
+
+authModal.addEventListener('click', (e)=>{ if (e.target === authModal) closeAuthModal(); });
+
+document.addEventListener('keydown', (e)=>{
+  if (e.key !== 'Escape' || authModal.classList.contains('hidden')) return;
+  closeAuthModal();
 });
 
-document.getElementById('doRegister').addEventListener('click', ()=>{
+// Keep keyboard focus inside the dialog while it is open.
+authModal.addEventListener('keydown', (e)=>{
+  if (e.key !== 'Tab') return;
+  const focusable = Array.from(authModal.querySelectorAll('button, input')).filter(el => el.offsetParent !== null);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
+
+// do register/login (mock)
+document.getElementById('doLogin').addEventListener('click', async ()=>{
+  const email = document.getElementById('loginEmail').value || 'user@example.com';
+  try {
+    applyUsage(await api('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }) }));
+    closeAuthModal();
+    alert('Přihlášeno (mock)');
+  } catch (err) { alert(err.message); }
+});
+
+document.getElementById('doRegister').addEventListener('click', async ()=>{
   const name = document.getElementById('regName').value || 'user';
   const email = document.getElementById('regEmail').value || 'user@example.com';
-  currentUser = { name, email, plan: null };
-  saveUser(); // after register, ask to choose plan
-  loginForm.classList.add('hidden'); registerForm.classList.add('hidden'); planSelect.classList.remove('hidden');
+  try {
+    applyUsage(await api('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, email }) }));
+    loginForm.classList.add('hidden'); registerForm.classList.add('hidden'); planSelect.classList.remove('hidden');
+  } catch (err) { alert(err.message); }
 });
 
 Array.from(document.getElementsByClassName('planBtn')).forEach(b=>{
-  b.addEventListener('click', (e)=>{
-    const p = e.target.dataset.plan || 'basic';
-    if (!currentUser) currentUser = { name: 'user', email:'', plan: p };
-    currentUser.plan = p;
-    saveUser(); authModal.classList.add('hidden'); alert('Děkujeme — plán zvolen (mock).');
+  b.addEventListener('click', async (e)=>{
+    const plan = e.target.dataset.plan || 'basic';
+    try {
+      applyUsage(await api('/api/auth/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan }) }));
+      closeAuthModal();
+      alert('Děkujeme — plán zvolen (mock).');
+    } catch (err) { alert(err.message); }
   });
 });
 
 // initialize UI
-updateUsageUI(); updateMenuUI();
+updateUsageUI(); updateMenuUI(); loadUsage();
 
 // Reset button handler (clear usage)
 const resetBtn = document.getElementById('resetBtn');
 if (resetBtn) {
-  resetBtn.addEventListener('click', ()=>{
-    if (confirm('Opravdu chcete resetovat počet pokusů na 0?')){
-      resetUsage();
-      alert('Počet pokusů byl resetován. Máte opět 5 volných dotazů.');
-    }
+  resetBtn.addEventListener('click', async ()=>{
+    if (!confirm('Opravdu chcete resetovat počet pokusů na 0?')) return;
+    try {
+      applyUsage(await api('/api/usage/reset', { method: 'POST' }));
+      alert(`Počet pokusů byl resetován. Máte opět ${freeLimit} volných dotazů.`);
+    } catch (err) { alert(err.message); }
   });
 }
 
-// Usage enforcement: before submit, check limit and increment
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
   const city = cityInput.value.trim();
   if (!city) return;
 
-  // if not logged in, check free usage
-  if (!currentUser) {
-    if (freeUsage >= FREE_LIMIT) {
-      // show modal prompting registration/plan
-      authMessage.textContent = 'Bez registrace je možné provést pouze 5 dotazů. Prosím zaregistrujte se a zvolte plán.';
-      openAuth('register');
-      return;
-    } else {
-      freeUsage += 1; saveUsage();
-      // show small note in result area about which attempt
-      const attemptText = `Toto je ${freeUsage}. pokus z ${FREE_LIMIT} (zdarma)`;
-      resultEl.innerHTML = `<div class="meta">${attemptText}</div>`;
-      resultEl.classList.remove('hidden');
-    }
-  }
-
-  // proceed with fetch
-  resultEl.classList.add('hidden');
   errorEl.classList.add('hidden');
   rawEl.classList.add('hidden');
   resultEl.innerHTML = '<div class="loading">Načítám…</div>';
@@ -173,25 +235,29 @@ form.addEventListener('submit', async (e) => {
 
   try {
     let url;
-    if (selectedLat && selectedLon) {
-      url = `/api/weather?lat=${encodeURIComponent(selectedLat)}&lon=${encodeURIComponent(selectedLon)}&name=${encodeURIComponent(city)}`;
+    const place = (selectedLat && selectedLon)
+      ? { lat: selectedLat, lon: selectedLon, shortName: selectedName }
+      : suggestions.find(s => (s.display || s.name).toLowerCase() === city.toLowerCase());
+
+    if (place) {
+      const label = place.shortName || place.name || city;
+      url = `/api/weather?lat=${encodeURIComponent(place.lat)}&lon=${encodeURIComponent(place.lon)}&name=${encodeURIComponent(label)}`;
     } else {
-      // try to match one suggestion exactly
-      const match = suggestions.find(s => (s.display || s.name).toLowerCase() === city.toLowerCase());
-      if (match) url = `/api/weather?lat=${encodeURIComponent(match.lat)}&lon=${encodeURIComponent(match.lon)}&name=${encodeURIComponent(city)}`;
-      else url = `/api/weather?city=${encodeURIComponent(city)}`;
+      url = `/api/weather?city=${encodeURIComponent(city)}`;
     }
 
-    const res = await fetch(url);
-    if (!res.ok) {
-      const err = await res.json().catch(()=>({ error: 'Chyba serveru' }));
-      throw new Error(err.error || 'Chyba při dotazu');
-    }
-    const resp = await res.json();
+    const resp = await api(url);
+    applyUsage(resp.usage);
     latestRaw = resp;
     render(resp);
   } catch (err) {
+    applyUsage(err.data?.usage);
     resultEl.classList.add('hidden');
+    if (err.data?.code === 'FREE_LIMIT_REACHED') {
+      authMessage.textContent = err.message;
+      openAuth('register');
+      return;
+    }
     errorEl.textContent = err.message || 'Neznámá chyba';
     errorEl.classList.remove('hidden');
   }
@@ -210,7 +276,13 @@ cityInput.addEventListener('keydown', (e) => {
       e.preventDefault(); chooseSuggestion(selectedIndex);
     }
   } else if (e.key === 'Escape') {
-    suggestionsEl.classList.add('hidden');
+    // first Escape closes the suggestions, a second one clears the input
+    if (visible) {
+      suggestionsEl.classList.add('hidden');
+    } else {
+      cityInput.value = '';
+      selectedLat = selectedLon = selectedName = null;
+    }
   }
 });
 
@@ -226,47 +298,18 @@ document.addEventListener('click', (e)=>{
   }
 });
 
-form.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const city = cityInput.value.trim();
-  if (!city) return;
-
-  resultEl.classList.add('hidden');
-  errorEl.classList.add('hidden');
-  rawEl.classList.add('hidden');
-  resultEl.innerHTML = '<div class="loading">Načítám…</div>';
-  resultEl.classList.remove('hidden');
-
-  try {
-    let url;
-    if (selectedLat && selectedLon) {
-      url = `/api/weather?lat=${encodeURIComponent(selectedLat)}&lon=${encodeURIComponent(selectedLon)}&name=${encodeURIComponent(city)}`;
-    } else {
-      // try to match one suggestion exactly
-      const match = suggestions.find(s => (s.display || s.name).toLowerCase() === city.toLowerCase());
-      if (match) url = `/api/weather?lat=${encodeURIComponent(match.lat)}&lon=${encodeURIComponent(match.lon)}&name=${encodeURIComponent(city)}`;
-      else url = `/api/weather?city=${encodeURIComponent(city)}`;
-    }
-
-    const res = await fetch(url);
-    if (!res.ok) {
-      const err = await res.json().catch(()=>({ error: 'Chyba serveru' }));
-      throw new Error(err.error || 'Chyba při dotazu');
-    }
-    const resp = await res.json();
-    latestRaw = resp;
-    render(resp);
-  } catch (err) {
-    resultEl.classList.add('hidden');
-    errorEl.textContent = err.message || 'Neznámá chyba';
-    errorEl.classList.remove('hidden');
-  }
-});
+// Shifting the UNIX timestamp by the location's offset only gives the right
+// wall-clock time if it is then formatted in UTC — otherwise the browser
+// timezone gets applied on top of it.
+function localDate(dt, tzOffset) {
+  return new Date((dt + (tzOffset || 0)) * 1000);
+}
 
 function fmtTime(dt, tzOffset) {
   if (!dt) return '-';
-  const d = new Date((dt + (tzOffset || 0)) * 1000);
-  return d.toLocaleString();
+  return localDate(dt, tzOffset).toLocaleTimeString('cs-CZ', {
+    hour: '2-digit', minute: '2-digit', timeZone: 'UTC'
+  });
 }
 
 function render(resp) {
@@ -288,13 +331,13 @@ function render(resp) {
   const headerHtml = `
     <div class="row">
       <div>
-        <h2>${location.name}${location.country ? ', ' + location.country : ''}</h2>
+        <h2>${escapeHtml(location.name)}${location.country ? ', ' + escapeHtml(location.country) : ''}</h2>
         <p class="big">${tempVal}</p>
-        <p class="desc">${desc}</p>
+        <p class="desc">${escapeHtml(desc)}</p>
         <div class="meta">${feelsVal ? `Cítí se jako ${feelsVal} • ` : ''}Vlhkost ${humidityVal} • Vítr ${windVal}</div>
       </div>
       <div class="icon">
-        <img src="https://openweathermap.org/img/wn/${icon}@2x.png" alt="ikonka" />
+        <img src="https://openweathermap.org/img/wn/${encodeURIComponent(icon)}@2x.png" alt="${escapeHtml(desc)}" />
       </div>
     </div>
   `;
@@ -315,7 +358,7 @@ function render(resp) {
   const tz = tzOffset || 0;
   const hours = (forecast && forecast.list || []).slice(0, 12).map(h => `
     <div class="hour">
-      <div class="hour-time">${new Date((h.dt + tz) * 1000).toLocaleString([], {hour: '2-digit', minute:'2-digit', day:'2-digit', month:'2-digit'})}</div>
+      <div class="hour-time">${localDate(h.dt, tz).toLocaleString('cs-CZ', {hour: '2-digit', minute:'2-digit', day:'2-digit', month:'2-digit', timeZone: 'UTC'})}</div>
       <div class="hour-temp">${Math.round(h.main.temp)}°C</div>
       <div class="hour-pop">${Math.round((h.pop || 0) * 100)}%</div>
     </div>
@@ -324,7 +367,7 @@ function render(resp) {
   // daily
   const dailyMap = {};
   (forecast && forecast.list || []).forEach(item => {
-    const date = new Date((item.dt + tz) * 1000).toLocaleDateString();
+    const date = localDate(item.dt, tz).toLocaleDateString('cs-CZ', { timeZone: 'UTC' });
     if (!dailyMap[date]) dailyMap[date] = { temps: [], pops: [], desc: item.weather?.[0]?.description || '', dt: item.dt };
     dailyMap[date].temps.push(item.main.temp);
     dailyMap[date].pops.push(item.pop || 0);
@@ -336,8 +379,8 @@ function render(resp) {
     const pop = Math.round((v.pops.reduce((a,b)=>a+b,0)/v.pops.length)*100);
     return `
       <div class="day">
-        <div class="day-date">${dk}</div>
-        <div class="day-desc">${v.desc}</div>
+        <div class="day-date">${escapeHtml(dk)}</div>
+        <div class="day-desc">${escapeHtml(v.desc)}</div>
         <div class="day-temp">${Math.round(min)}° / ${Math.round(max)}°C</div>
         <div class="day-pop">${pop}%</div>
       </div>
@@ -353,7 +396,7 @@ function render(resp) {
     const comp = a.components || {};
     return `
       <div class="air-box">
-        <div><strong>Kvalita ovzduší:</strong> ${aqi ? (aqiMap[aqi] || aqi) + ' (AQI ' + aqi + ')' : '-'}</div>
+        <div><strong>Kvalita ovzduší:</strong> ${aqi ? escapeHtml((aqiMap[aqi] || aqi) + ' (AQI ' + aqi + ')') : '-'}</div>
         <div class="air-items">PM2.5: ${comp.pm2_5 ?? '-'} µg/m³ • PM10: ${comp.pm10 ?? '-'} µg/m³ • O₃: ${comp.o3 ?? '-'} µg/m³ • NO₂: ${comp.no2 ?? '-'} µg/m³ • CO: ${comp.co ?? '-'}</div>
       </div>
     `;
@@ -380,8 +423,4 @@ toggleRaw.addEventListener('click', () => {
     rawEl.classList.add('hidden');
     toggleRaw.textContent = 'Zobrazit surová data';
   }
-});
-
-cityInput.addEventListener('keydown', (e)=>{
-  if (e.key === 'Escape') { cityInput.value = ''; cityInput.blur(); }
 });
