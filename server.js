@@ -33,8 +33,10 @@ app.get('/api/suggest', async (req, res) => {
       country: item.country,
       lat: item.lat,
       lon: item.lon,
-      population: item.population || 0
-    }));
+          population: item.population || 0,
+          // OpenWeather geocoding sometimes doesn't provide postal code; include if present under common keys
+          zip: item.postal_code || item.zip || item.postcode || null
+        }));
 
     // Build friendly display name and scoring
     list = list.map(it => {
