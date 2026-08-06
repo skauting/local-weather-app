@@ -198,7 +198,8 @@ function requireWeatherConfig(req, res, next) {
 }
 
 const generalApiLimit = rateLimit('api', 120, 60 * 1000);
-const authApiLimit = rateLimit('auth', 10, 15 * 60 * 1000);
+const authApiLimit = rateLimit('auth', 20, 15 * 60 * 1000);
+const adminApiLimit = rateLimit('admin', 60, 60 * 1000);
 const suggestApiLimit = rateLimit('suggest', 60, 60 * 1000);
 const weatherApiLimit = rateLimit('weather', 30, 60 * 1000);
 
@@ -206,9 +207,10 @@ app.use('/api', generalApiLimit, protectStateChangingRequests);
 
 async function getProfile(user) {
   if (!user || !supabaseAdmin) return null;
+  const profileFields = 'first_name, last_name, email, phone, country_code, role, credits, is_blocked';
   const { data, error } = await supabaseAdmin
     .from('profiles')
-    .select('first_name, last_name, email, phone, country_code, role, credits')
+    .select(profileFields)
     .eq('id', user.id)
     .maybeSingle();
 
@@ -226,7 +228,7 @@ async function getProfile(user) {
       .from('profiles')
       .update({ role: 'admin' })
       .eq('id', user.id)
-      .select('first_name, last_name, email, phone, country_code, role, credits')
+      .select(profileFields)
       .maybeSingle();
     if (!promoteError && promoted) return promoted;
   }
@@ -247,11 +249,12 @@ function publicUser(user, profile) {
     phone: profile?.phone || user.user_metadata?.phone || '',
     countryCode: profile?.country_code || user.user_metadata?.country_code || '',
     role: profile?.role || 'user',
-    credits: typeof profile?.credits === 'number' ? profile.credits : STARTING_CREDITS
+    credits: typeof profile?.credits === 'number' ? profile.credits : STARTING_CREDITS,
+    isBlocked: Boolean(profile?.is_blocked)
   };
 }
 
-async function getAuthenticatedUser(req, res) {
+async function resolveAuthenticatedUser(req, res) {
   const auth = createAuthClient();
   if (!auth) return null;
 
@@ -261,7 +264,10 @@ async function getAuthenticatedUser(req, res) {
 
   if (accessToken) {
     const { data } = await auth.auth.getUser(accessToken);
-    if (data?.user) return publicUser(data.user, await getProfile(data.user));
+    if (data?.user) {
+      const profile = await getProfile(data.user);
+      return { authUser: data.user, profile, user: publicUser(data.user, profile) };
+    }
   }
 
   if (!refreshToken) return null;
@@ -273,7 +279,18 @@ async function getAuthenticatedUser(req, res) {
   }
 
   setAuthCookies(res, data.session);
-  return publicUser(data.user, await getProfile(data.user));
+  const profile = await getProfile(data.user);
+  return { authUser: data.user, profile, user: publicUser(data.user, profile) };
+}
+
+async function getAuthenticatedUser(req, res) {
+  const resolved = await resolveAuthenticatedUser(req, res);
+  if (!resolved?.user) return null;
+  if (resolved.user.isBlocked) {
+    clearAuthCookies(res);
+    return null;
+  }
+  return resolved.user;
 }
 
 function usagePayload(session, user = null) {
@@ -303,6 +320,20 @@ async function consumeUserCredit(userId) {
   const { data, error } = await supabaseAdmin.rpc('consume_credit', { p_user_id: userId });
   if (error) throw error;
   return typeof data === 'number' ? data : -1;
+}
+
+async function logSearch(userId, city) {
+  const label = normalizeSearch(city).slice(0, 100);
+  if (!userId || !label) return;
+  const { error } = await supabaseAdmin.from('search_logs').insert({
+    user_id: userId,
+    city: label
+  });
+  if (error) console.error('Search log error', error.message);
+}
+
+function isUuid(value) {
+  return /^[0-9a-f-]{36}$/i.test((value || '').toString());
 }
 
 app.get('/api/usage', async (req, res) => {
@@ -412,10 +443,18 @@ app.post('/api/auth/login', authApiLimit, async (req, res) => {
     return res.status(401).json({ error: 'Neplatný e-mail nebo heslo, případně e-mail ještě nebyl potvrzen.' });
   }
 
+  const profile = await getProfile(data.user);
+  if (profile?.is_blocked) {
+    return res.status(403).json({
+      error: 'Váš účet byl zablokován. Kontaktujte administrátora.',
+      code: 'USER_BLOCKED'
+    });
+  }
+
   setAuthCookies(res, data.session);
   const session = getSession(req, res);
   session.count = 0;
-  res.json(usagePayload(session, publicUser(data.user, await getProfile(data.user))));
+  res.json(usagePayload(session, publicUser(data.user, profile)));
 });
 
 app.post('/api/auth/logout', async (req, res) => {
@@ -610,6 +649,8 @@ app.get('/api/weather', weatherApiLimit, requireWeatherConfig, async (req, res) 
       // ignore air pollution errors
     }
 
+    const searchedCity = preferredName || name || city;
+
     if (!user) {
       session.count += 1;
     } else {
@@ -622,6 +663,7 @@ app.get('/api/weather', weatherApiLimit, requireWeatherConfig, async (req, res) 
         });
       }
       user = { ...user, credits: remaining };
+      await logSearch(user.id, searchedCity);
     }
 
     res.json({
@@ -638,14 +680,14 @@ app.get('/api/weather', weatherApiLimit, requireWeatherConfig, async (req, res) 
   }
 });
 
-app.get('/api/admin/users', authApiLimit, async (req, res) => {
+app.get('/api/admin/users', adminApiLimit, async (req, res) => {
   if (!requireSupabase(res)) return;
   const admin = await requireAdmin(req, res);
   if (!admin) return;
 
   const { data, error } = await supabaseAdmin
     .from('profiles')
-    .select('id, first_name, last_name, email, phone, country_code, role, credits, created_at')
+    .select('id, first_name, last_name, email, phone, country_code, role, credits, is_blocked, created_at')
     .order('created_at', { ascending: true });
 
   if (error) {
@@ -663,19 +705,21 @@ app.get('/api/admin/users', authApiLimit, async (req, res) => {
       countryCode: row.country_code,
       role: row.role,
       credits: row.credits,
+      isBlocked: Boolean(row.is_blocked),
+      status: row.is_blocked ? 'blocked' : 'active',
       createdAt: row.created_at
     }))
   });
 });
 
-app.post('/api/admin/users/:id/credits', authApiLimit, async (req, res) => {
+app.post('/api/admin/users/:id/credits', adminApiLimit, async (req, res) => {
   if (!requireSupabase(res)) return;
   const admin = await requireAdmin(req, res);
   if (!admin) return;
 
   const userId = (req.params.id || '').toString();
   const amount = Number.parseInt(req.body?.amount, 10);
-  if (!/^[0-9a-f-]{36}$/i.test(userId)) {
+  if (!isUuid(userId)) {
     return res.status(400).json({ error: 'Neplatné ID uživatele.' });
   }
   if (!Number.isInteger(amount) || amount < 1 || amount > 100000) {
@@ -700,6 +744,73 @@ app.post('/api/admin/users/:id/credits', authApiLimit, async (req, res) => {
     credits: data,
     added: amount,
     message: `Přidáno ${amount} kreditů.`
+  });
+});
+
+app.post('/api/admin/users/:id/block', adminApiLimit, async (req, res) => {
+  if (!requireSupabase(res)) return;
+  const admin = await requireAdmin(req, res);
+  if (!admin) return;
+
+  const userId = (req.params.id || '').toString();
+  const blocked = req.body?.blocked;
+  if (!isUuid(userId)) {
+    return res.status(400).json({ error: 'Neplatné ID uživatele.' });
+  }
+  if (typeof blocked !== 'boolean') {
+    return res.status(400).json({ error: 'Chybí parametr blocked (true/false).' });
+  }
+  if (userId === admin.id && blocked) {
+    return res.status(400).json({ error: 'Nemůžete zablokovat vlastní účet.' });
+  }
+
+  const { data, error } = await supabaseAdmin.rpc('set_user_blocked', {
+    p_user_id: userId,
+    p_blocked: blocked
+  });
+
+  if (error) {
+    console.error('Admin block error', error.message);
+    const missing = /not found/i.test(error.message);
+    return res.status(missing ? 404 : 500).json({
+      error: missing ? 'Uživatel nebyl nalezen.' : 'Změna stavu účtu se nezdařila.'
+    });
+  }
+
+  res.json({
+    id: data.id,
+    isBlocked: Boolean(data.is_blocked),
+    status: data.is_blocked ? 'blocked' : 'active',
+    message: data.is_blocked ? 'Uživatel byl zablokován.' : 'Uživatel byl aktivován.'
+  });
+});
+
+app.get('/api/admin/searches', adminApiLimit, async (req, res) => {
+  if (!requireSupabase(res)) return;
+  const admin = await requireAdmin(req, res);
+  if (!admin) return;
+
+  const limit = Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 50));
+  const { data, error } = await supabaseAdmin
+    .from('search_logs')
+    .select('id, city, searched_at, user_id, profiles!inner(first_name, last_name, email)')
+    .order('searched_at', { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error('Admin searches error', error.message);
+    return res.status(500).json({ error: 'Nepodařilo se načíst historii vyhledávání.' });
+  }
+
+  res.json({
+    searches: (data || []).map(row => ({
+      id: row.id,
+      city: row.city,
+      searchedAt: row.searched_at,
+      userId: row.user_id,
+      userName: [row.profiles?.first_name, row.profiles?.last_name].filter(Boolean).join(' ') || row.profiles?.email,
+      userEmail: row.profiles?.email || ''
+    }))
   });
 });
 

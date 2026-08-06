@@ -78,20 +78,27 @@ button:disabled{cursor:wait;opacity:.65;transform:none}
 .suggestions li[aria-selected="true"],.suggestions li:hover{background:#f1f5ff}
 .suggestions .muted{color:var(--muted);font-size:13px}
 
-.admin-card{max-width:980px}
+.admin-card{max-width:1100px}
 .admin-subtitle{margin:4px 0 0}
 .admin-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:12px 0}
 .admin-panel{margin-top:8px}
+.admin-section-title{margin:22px 0 10px;font-size:18px}
 .table-wrap{overflow:auto;border:1px solid #eef2ff;border-radius:10px}
 .admin-table{width:100%;border-collapse:collapse;background:#fff}
 .admin-table th,.admin-table td{padding:12px 14px;text-align:left;border-bottom:1px solid #eef2ff;vertical-align:middle}
 .admin-table th{background:#f8fafc;font-size:13px;color:var(--muted);font-weight:600}
 .admin-table tr:last-child td{border-bottom:none}
+.admin-table tr.row-blocked{background:#fff7f7}
 .topup-form{display:flex;gap:8px;align-items:center}
 .topup-form input{width:90px;padding:8px 10px;border:1px solid #e6e9ef;border-radius:8px}
 .topup-form button{padding:8px 12px}
-.role-pill{display:inline-block;padding:3px 8px;border-radius:999px;font-size:12px;background:#eef2ff;color:#1e3a8a}
+.role-pill,.status-pill{display:inline-block;padding:3px 8px;border-radius:999px;font-size:12px;background:#eef2ff;color:#1e3a8a}
 .role-pill.role-admin{background:#ecfdf5;color:#065f46}
+.status-pill.status-active{background:#ecfdf5;color:#065f46}
+.status-pill.status-blocked{background:#fef2f2;color:#991b1b}
+.block-btn{padding:8px 12px;border:none;border-radius:8px;cursor:pointer;font-weight:600}
+.block-btn.mute{background:#ef4444;color:#fff}
+.block-btn.unmute{background:#16a34a;color:#fff}
 .credits-cell{font-variant-numeric:tabular-nums}
 
 @media (max-width:600px){

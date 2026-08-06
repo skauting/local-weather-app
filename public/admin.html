@@ -11,7 +11,7 @@
     <div class="header-row">
       <div>
         <h1>Administrace</h1>
-        <p class="meta admin-subtitle">Správa registrovaných uživatelů a kreditů</p>
+        <p class="meta admin-subtitle">Správa uživatelů, kreditů a monitoring vyhledávání</p>
       </div>
       <div class="right-area">
         <a class="menu-link" href="/">Zpět na počasí</a>
@@ -29,21 +29,37 @@
     <section id="adminPanel" class="admin-panel hidden">
       <div class="admin-toolbar">
         <div class="meta">Přihlášen: <strong id="adminName"></strong></div>
-        <button id="refreshUsers" class="muted" type="button">Obnovit</button>
+        <button id="refreshAll" class="muted" type="button">Obnovit</button>
       </div>
 
+      <h2 class="admin-section-title">Uživatelé</h2>
       <div class="table-wrap">
         <table class="admin-table" aria-label="Seznam uživatelů">
           <thead>
             <tr>
               <th>Jméno</th>
               <th>E-mail</th>
-              <th>Role</th>
               <th>Kredity</th>
+              <th>Stav</th>
               <th>Dobít</th>
+              <th>Akce</th>
             </tr>
           </thead>
           <tbody id="usersBody"></tbody>
+        </table>
+      </div>
+
+      <h2 class="admin-section-title">Poslední vyhledávání</h2>
+      <div class="table-wrap">
+        <table class="admin-table" aria-label="Historie vyhledávání">
+          <thead>
+            <tr>
+              <th>Uživatel</th>
+              <th>Město</th>
+              <th>Čas</th>
+            </tr>
+          </thead>
+          <tbody id="searchesBody"></tbody>
         </table>
       </div>
     </section>
