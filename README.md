@@ -8,6 +8,7 @@ Instrukce k spuštění lokální aplikace počasí
    - Supabase URL
    - Supabase publishable key
    - Supabase secret key
+   - ADMIN_EMAILS (čárkou oddělené e-maily, které se po přihlášení stanou adminy)
 
    Soubor `.env` je v `.gitignore` a nesmí se commitovat.
 

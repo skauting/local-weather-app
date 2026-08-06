@@ -20,6 +20,11 @@ const MAX_ANONYMOUS_SESSIONS = Math.max(
 );
 const MAX_RATE_LIMIT_KEYS = 10000;
 const AUTH_COOKIE_TTL = 30 * 24 * 60 * 60;
+const STARTING_CREDITS = 5;
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
+  .split(',')
+  .map(value => value.trim().toLowerCase())
+  .filter(Boolean);
 
 if (!API_KEY) {
   console.warn('Varování: OPENWEATHER_API_KEY není nastaven. Použijte: set OPENWEATHER_API_KEY=... (cmd) nebo $env:OPENWEATHER_API_KEY = "..." (PowerShell)');
@@ -203,13 +208,27 @@ async function getProfile(user) {
   if (!user || !supabaseAdmin) return null;
   const { data, error } = await supabaseAdmin
     .from('profiles')
-    .select('first_name, last_name, email, phone, country_code')
+    .select('first_name, last_name, email, phone, country_code, role, credits')
     .eq('id', user.id)
     .maybeSingle();
 
   if (error) {
     console.error('Profile error', error.message);
     return null;
+  }
+
+  if (!data) return null;
+
+  // Bootstrap admins from ADMIN_EMAILS without exposing that path to clients.
+  const email = (data.email || user.email || '').toLowerCase();
+  if (ADMIN_EMAILS.includes(email) && data.role !== 'admin') {
+    const { data: promoted, error: promoteError } = await supabaseAdmin
+      .from('profiles')
+      .update({ role: 'admin' })
+      .eq('id', user.id)
+      .select('first_name, last_name, email, phone, country_code, role, credits')
+      .maybeSingle();
+    if (!promoteError && promoted) return promoted;
   }
 
   return data;
@@ -226,7 +245,9 @@ function publicUser(user, profile) {
     lastName,
     email: profile?.email || user.email,
     phone: profile?.phone || user.user_metadata?.phone || '',
-    countryCode: profile?.country_code || user.user_metadata?.country_code || ''
+    countryCode: profile?.country_code || user.user_metadata?.country_code || '',
+    role: profile?.role || 'user',
+    credits: typeof profile?.credits === 'number' ? profile.credits : STARTING_CREDITS
   };
 }
 
@@ -260,8 +281,28 @@ function usagePayload(session, user = null) {
     count: session.count,
     limit: FREE_LIMIT,
     remaining: user ? null : Math.max(0, FREE_LIMIT - session.count),
+    credits: user ? user.credits : null,
     user
   };
+}
+
+async function requireAdmin(req, res) {
+  const user = await getAuthenticatedUser(req, res);
+  if (!user) {
+    res.status(401).json({ error: 'Nejste přihlášeni.', code: 'UNAUTHORIZED' });
+    return null;
+  }
+  if (user.role !== 'admin') {
+    res.status(403).json({ error: 'Přístup pouze pro administrátory.', code: 'FORBIDDEN' });
+    return null;
+  }
+  return user;
+}
+
+async function consumeUserCredit(userId) {
+  const { data, error } = await supabaseAdmin.rpc('consume_credit', { p_user_id: userId });
+  if (error) throw error;
+  return typeof data === 'number' ? data : -1;
 }
 
 app.get('/api/usage', async (req, res) => {
@@ -506,11 +547,18 @@ app.get('/api/weather', weatherApiLimit, requireWeatherConfig, async (req, res) 
   }
 
   const session = getSession(req, res);
-  const user = await getAuthenticatedUser(req, res);
+  let user = await getAuthenticatedUser(req, res);
   if (!user && session.count >= FREE_LIMIT) {
     return res.status(429).json({
       error: `Bez registrace je možné provést pouze ${FREE_LIMIT} dotazů.`,
       code: 'FREE_LIMIT_REACHED',
+      usage: usagePayload(session, user)
+    });
+  }
+  if (user && user.credits < 1) {
+    return res.status(402).json({
+      error: 'Nemáte dostatek kreditů. Požádejte administrátora o dobití.',
+      code: 'INSUFFICIENT_CREDITS',
       usage: usagePayload(session, user)
     });
   }
@@ -562,7 +610,19 @@ app.get('/api/weather', weatherApiLimit, requireWeatherConfig, async (req, res) 
       // ignore air pollution errors
     }
 
-    if (!user) session.count += 1;
+    if (!user) {
+      session.count += 1;
+    } else {
+      const remaining = await consumeUserCredit(user.id);
+      if (remaining < 0) {
+        return res.status(402).json({
+          error: 'Nemáte dostatek kreditů. Požádejte administrátora o dobití.',
+          code: 'INSUFFICIENT_CREDITS',
+          usage: usagePayload(session, user)
+        });
+      }
+      user = { ...user, credits: remaining };
+    }
 
     res.json({
       location: { name, country, lat, lon },
@@ -576,6 +636,71 @@ app.get('/api/weather', weatherApiLimit, requireWeatherConfig, async (req, res) 
     const msg = err.response?.data?.message || err.message;
     res.status(err.response?.status || 500).json({ error: msg });
   }
+});
+
+app.get('/api/admin/users', authApiLimit, async (req, res) => {
+  if (!requireSupabase(res)) return;
+  const admin = await requireAdmin(req, res);
+  if (!admin) return;
+
+  const { data, error } = await supabaseAdmin
+    .from('profiles')
+    .select('id, first_name, last_name, email, phone, country_code, role, credits, created_at')
+    .order('created_at', { ascending: true });
+
+  if (error) {
+    console.error('Admin users error', error.message);
+    return res.status(500).json({ error: 'Nepodařilo se načíst uživatele.' });
+  }
+
+  res.json({
+    users: (data || []).map(row => ({
+      id: row.id,
+      firstName: row.first_name,
+      lastName: row.last_name,
+      email: row.email,
+      phone: row.phone,
+      countryCode: row.country_code,
+      role: row.role,
+      credits: row.credits,
+      createdAt: row.created_at
+    }))
+  });
+});
+
+app.post('/api/admin/users/:id/credits', authApiLimit, async (req, res) => {
+  if (!requireSupabase(res)) return;
+  const admin = await requireAdmin(req, res);
+  if (!admin) return;
+
+  const userId = (req.params.id || '').toString();
+  const amount = Number.parseInt(req.body?.amount, 10);
+  if (!/^[0-9a-f-]{36}$/i.test(userId)) {
+    return res.status(400).json({ error: 'Neplatné ID uživatele.' });
+  }
+  if (!Number.isInteger(amount) || amount < 1 || amount > 100000) {
+    return res.status(400).json({ error: 'Zadejte platný počet kreditů (1–100000).' });
+  }
+
+  const { data, error } = await supabaseAdmin.rpc('add_credits', {
+    p_user_id: userId,
+    p_amount: amount
+  });
+
+  if (error) {
+    console.error('Admin top-up error', error.message);
+    const missing = /not found/i.test(error.message);
+    return res.status(missing ? 404 : 500).json({
+      error: missing ? 'Uživatel nebyl nalezen.' : 'Dobití kreditů se nezdařilo.'
+    });
+  }
+
+  res.json({
+    id: userId,
+    credits: data,
+    added: amount,
+    message: `Přidáno ${amount} kreditů.`
+  });
 });
 
 app.listen(PORT, () => console.log(`Server běží na http://localhost:${PORT}`));

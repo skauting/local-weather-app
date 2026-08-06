@@ -48,8 +48,39 @@ function updateUsageUI(){
   document.getElementById('usageCount').textContent = freeUsage;
   document.getElementById('usageLimit').textContent = freeLimit;
   document.getElementById('usage').classList.toggle('hidden', Boolean(currentUser));
+  document.getElementById('resetBtn').classList.toggle('hidden', Boolean(currentUser));
+
+  const creditsBadge = document.getElementById('creditsBadge');
+  const creditsCount = document.getElementById('creditsCount');
+  if (currentUser) {
+    creditsCount.textContent = currentUser.credits ?? 0;
+    creditsBadge.classList.remove('hidden');
+  } else {
+    creditsBadge.classList.add('hidden');
+  }
 }
-function updateMenuUI(){ const logoutBtn = document.getElementById('logoutBtn'); const menuBtn = document.getElementById('menuBtn'); if (currentUser && currentUser.name){ menuBtn.textContent = currentUser.name + ' ▾'; logoutBtn.classList.remove('hidden'); } else { menuBtn.textContent = 'Přihlásit / Registrovat ▾'; logoutBtn.classList.add('hidden'); } }
+
+function updateMenuUI(){
+  const logoutBtn = document.getElementById('logoutBtn');
+  const menuBtn = document.getElementById('menuBtn');
+  const openLogin = document.getElementById('openLogin');
+  const openRegister = document.getElementById('openRegister');
+  const adminLink = document.getElementById('adminLink');
+
+  if (currentUser && currentUser.name) {
+    menuBtn.textContent = currentUser.name + ' ▾';
+    logoutBtn.classList.remove('hidden');
+    openLogin.classList.add('hidden');
+    openRegister.classList.add('hidden');
+    adminLink.classList.toggle('hidden', currentUser.role !== 'admin');
+  } else {
+    menuBtn.textContent = 'Přihlásit / Registrovat ▾';
+    logoutBtn.classList.add('hidden');
+    openLogin.classList.remove('hidden');
+    openRegister.classList.remove('hidden');
+    adminLink.classList.add('hidden');
+  }
+}
 
 
 function escapeHtml(value) {
@@ -166,7 +197,7 @@ function openAuth(kind){
   menuDrop.classList.add('hidden');
   menuBtn.setAttribute('aria-expanded', 'false');
   loginForm.classList.add('hidden'); registerForm.classList.add('hidden');
-  setAuthMessage('Bez registrace můžete provést 5 dotazů. Po registraci je hledání bez tohoto limitu.');
+  setAuthMessage('Bez registrace můžete provést 5 dotazů. Po registraci získáte 5 kreditů na další hledání.');
   if (kind === 'login'){ loginForm.classList.remove('hidden'); }
   else if (kind === 'register'){ registerForm.classList.remove('hidden'); }
   authModal.querySelector('.auth-form:not(.hidden) input, .auth-form:not(.hidden) select')?.focus();
@@ -319,8 +350,13 @@ form.addEventListener('submit', async (e) => {
     applyUsage(err.data?.usage);
     resultEl.classList.add('hidden');
     if (err.data?.code === 'FREE_LIMIT_REACHED') {
-      authMessage.textContent = err.message;
+      setAuthMessage(err.message, 'error');
       openAuth('register');
+      return;
+    }
+    if (err.data?.code === 'INSUFFICIENT_CREDITS') {
+      errorEl.textContent = err.message;
+      errorEl.classList.remove('hidden');
       return;
     }
     errorEl.textContent = err.message || 'Neznámá chyba';

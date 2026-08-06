@@ -12,12 +12,14 @@
       <h1>Aktuální počasí</h1>
       <div class="right-area">
         <div id="usage" class="usage">Pokus: <span id="usageCount">0</span>/<span id="usageLimit">5</span></div>
+        <div id="creditsBadge" class="usage credits-badge hidden">Kredity: <span id="creditsCount">0</span></div>
         <button id="resetBtn" class="resetBtn" title="Resetovat počet pokusů">Resetovat</button>
         <div class="menu" id="menu">
           <button id="menuBtn" aria-haspopup="true" aria-expanded="false">Přihlásit / Registrovat ▾</button>
           <div id="menuDrop" class="dropdown hidden" role="menu">
             <button id="openLogin" class="menu-item" role="menuitem">Přihlásit se</button>
             <button id="openRegister" class="menu-item" role="menuitem">Registrovat</button>
+            <a id="adminLink" class="menu-item hidden" role="menuitem" href="/admin.html">Administrace</a>
             <button id="logoutBtn" class="menu-item hidden" role="menuitem">Odhlásit</button>
           </div>
         </div>
@@ -48,7 +50,7 @@
       <div class="modal-content">
         <button id="closeAuth" class="modal-close" type="button" aria-label="Zavřít">×</button>
         <div class="auth-forms">
-          <div id="authMessage" class="auth-message" role="status">Bez registrace můžete provést 5 dotazů. Po registraci je hledání bez tohoto limitu.</div>
+          <div id="authMessage" class="auth-message" role="status">Bez registrace můžete provést 5 dotazů. Po registraci získáte 5 kreditů na další hledání.</div>
 
           <form id="loginForm" class="auth-form hidden">
             <h3>Přihlásit se</h3>
