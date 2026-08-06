@@ -13,7 +13,12 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY;
 const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY;
 const FREE_LIMIT = 5;
-const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const SESSION_TTL_MS = 6 * 60 * 60 * 1000;
+const MAX_ANONYMOUS_SESSIONS = Math.max(
+  100,
+  Number.parseInt(process.env.MAX_ANONYMOUS_SESSIONS || '5000', 10) || 5000
+);
+const MAX_RATE_LIMIT_KEYS = 10000;
 const AUTH_COOKIE_TTL = 30 * 24 * 60 * 60;
 
 if (!API_KEY) {
@@ -40,15 +45,21 @@ function createAuthClient() {
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// In-memory sessions. A restart clears them; a real deployment needs a store.
+// In-memory guest sessions. Map insertion order acts as an LRU queue.
 const sessions = new Map();
+const rateBuckets = new Map();
 
-setInterval(() => {
-  const cutoff = Date.now() - SESSION_TTL_MS;
+function removeExpiredState() {
+  const now = Date.now();
   for (const [sid, s] of sessions) {
-    if (s.lastSeen < cutoff) sessions.delete(sid);
+    if (s.lastSeen + SESSION_TTL_MS <= now) sessions.delete(sid);
   }
-}, 60 * 60 * 1000).unref();
+  for (const [key, bucket] of rateBuckets) {
+    if (bucket.resetAt <= now) rateBuckets.delete(key);
+  }
+}
+
+setInterval(removeExpiredState, 10 * 60 * 1000).unref();
 
 function parseCookies(req) {
   const out = {};
@@ -85,15 +96,108 @@ function clearAuthCookies(res) {
 
 function getSession(req, res) {
   let sid = parseCookies(req)['wa_sid'];
-  if (!sid || !sessions.has(sid)) {
-    sid = crypto.randomUUID();
-    sessions.set(sid, { count: 0, user: null, lastSeen: Date.now() });
-    appendCookie(res, serializeCookie('wa_sid', sid, SESSION_TTL_MS / 1000));
+  let session = sid ? sessions.get(sid) : null;
+
+  if (session && session.lastSeen + SESSION_TTL_MS <= Date.now()) {
+    sessions.delete(sid);
+    session = null;
   }
-  const session = sessions.get(sid);
-  session.lastSeen = Date.now();
+
+  if (!session) {
+    while (sessions.size >= MAX_ANONYMOUS_SESSIONS) {
+      sessions.delete(sessions.keys().next().value);
+    }
+    sid = crypto.randomUUID();
+    session = { count: 0, lastSeen: Date.now() };
+    sessions.set(sid, session);
+    appendCookie(res, serializeCookie('wa_sid', sid, SESSION_TTL_MS / 1000));
+  } else {
+    // Touch the entry so the least recently used session remains first.
+    session.lastSeen = Date.now();
+    sessions.delete(sid);
+    sessions.set(sid, session);
+  }
+
   return session;
 }
+
+function rateLimit(name, max, windowMs) {
+  return (req, res, next) => {
+    const ip = req.socket.remoteAddress || 'unknown';
+    const key = `${name}:${ip}`;
+    const now = Date.now();
+    let bucket = rateBuckets.get(key);
+
+    if (!bucket || bucket.resetAt <= now) {
+      if (!bucket && rateBuckets.size >= MAX_RATE_LIMIT_KEYS) {
+        rateBuckets.delete(rateBuckets.keys().next().value);
+      }
+      bucket = { count: 0, resetAt: now + windowMs };
+      rateBuckets.set(key, bucket);
+    }
+
+    bucket.count += 1;
+    const remaining = Math.max(0, max - bucket.count);
+    res.setHeader('RateLimit-Limit', max);
+    res.setHeader('RateLimit-Remaining', remaining);
+    res.setHeader('RateLimit-Reset', Math.ceil(bucket.resetAt / 1000));
+
+    if (bucket.count > max) {
+      res.setHeader('Retry-After', Math.ceil((bucket.resetAt - now) / 1000));
+      return res.status(429).json({
+        error: 'Příliš mnoho požadavků. Zkuste to prosím později.',
+        code: 'RATE_LIMITED'
+      });
+    }
+
+    next();
+  };
+}
+
+function protectStateChangingRequests(req, res, next) {
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return next();
+
+  const requestedWith = req.get('X-Requested-With');
+  const origin = req.get('Origin');
+  let originAllowed = true;
+
+  if (origin) {
+    try {
+      const originUrl = new URL(origin);
+      const configuredOrigins = (process.env.APP_ORIGIN || '')
+        .split(',')
+        .map(value => value.trim())
+        .filter(Boolean);
+      originAllowed = originUrl.host === req.get('host') || configuredOrigins.includes(originUrl.origin);
+    } catch (e) {
+      originAllowed = false;
+    }
+  }
+
+  if (requestedWith !== 'weather-app' || !originAllowed) {
+    return res.status(403).json({
+      error: 'Požadavek byl odmítnut z bezpečnostních důvodů.',
+      code: 'CSRF_REJECTED'
+    });
+  }
+
+  next();
+}
+
+function requireWeatherConfig(req, res, next) {
+  if (API_KEY) return next();
+  return res.status(503).json({
+    error: 'Služba počasí není nakonfigurována.',
+    code: 'WEATHER_NOT_CONFIGURED'
+  });
+}
+
+const generalApiLimit = rateLimit('api', 120, 60 * 1000);
+const authApiLimit = rateLimit('auth', 10, 15 * 60 * 1000);
+const suggestApiLimit = rateLimit('suggest', 60, 60 * 1000);
+const weatherApiLimit = rateLimit('weather', 30, 60 * 1000);
+
+app.use('/api', generalApiLimit, protectStateChangingRequests);
 
 async function getProfile(user) {
   if (!user || !supabaseAdmin) return null;
@@ -208,7 +312,7 @@ function registrationErrorMessage(error) {
   return 'Registraci se nepodařilo dokončit. Zkuste to prosím znovu.';
 }
 
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', authApiLimit, async (req, res) => {
   if (!requireSupabase(res)) return;
   const input = validateRegistration(req.body);
   if (input.error) return res.status(400).json({ error: input.error });
@@ -255,7 +359,7 @@ app.post('/api/auth/register', async (req, res) => {
   });
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authApiLimit, async (req, res) => {
   if (!requireSupabase(res)) return;
   const email = (req.body?.email || '').toString().trim().toLowerCase();
   const password = (req.body?.password || '').toString();
@@ -290,11 +394,18 @@ app.post('/api/auth/logout', async (req, res) => {
 
 // Helper to normalize
 function norm(s){ return (s||'').toString().trim().toLowerCase(); }
+function normalizeSearch(s){ return (s||'').toString().trim().replace(/\s+/g, ' '); }
 
 // Geocoding suggestion endpoint with smarter ranking and Prague fallback
-app.get('/api/suggest', async (req, res) => {
-  const q = req.query.q;
-  if (!q) return res.json([]);
+app.get('/api/suggest', suggestApiLimit, requireWeatherConfig, async (req, res) => {
+  const q = normalizeSearch(req.query.q);
+  if (!q || q.length < 2) return res.json([]);
+  if (q.length > 100) {
+    return res.status(400).json({
+      error: 'Název města je příliš dlouhý.',
+      code: 'INVALID_CITY_QUERY'
+    });
+  }
   try {
     const url = 'https://api.openweathermap.org/geo/1.0/direct';
     const resp = await axios.get(url, { params: { q, limit: 12, appid: API_KEY } });
@@ -381,12 +492,18 @@ app.get('/api/suggest', async (req, res) => {
 });
 
 // Weather endpoint: accept city or lat+lon. Use free endpoints (current + forecast + air)
-app.get('/api/weather', async (req, res) => {
-  const city = req.query.city;
+app.get('/api/weather', weatherApiLimit, requireWeatherConfig, async (req, res) => {
+  const city = normalizeSearch(req.query.city);
   const latQ = req.query.lat;
   const lonQ = req.query.lon;
 
   if (!city && !(latQ && lonQ)) return res.status(400).json({ error: 'Město nebo souřadnice jsou povinné' });
+  if (city.length > 100) {
+    return res.status(400).json({
+      error: 'Název města je příliš dlouhý.',
+      code: 'INVALID_CITY_QUERY'
+    });
+  }
 
   const session = getSession(req, res);
   const user = await getAuthenticatedUser(req, res);
@@ -398,14 +515,14 @@ app.get('/api/weather', async (req, res) => {
     });
   }
 
-  const preferredName = (req.query.name || '').toString().trim();
+  const preferredName = normalizeSearch(req.query.name).slice(0, 100);
 
   try {
     let lat, lon, name, country;
 
     if (latQ && lonQ) {
       lat = parseFloat(latQ); lon = parseFloat(lonQ);
-      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
         return res.status(400).json({ error: 'Neplatné souřadnice' });
       }
       // try reverse geocode to get name/country

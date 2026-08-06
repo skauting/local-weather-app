@@ -28,7 +28,13 @@ function applyUsage(usage) {
 }
 
 async function api(path, options) {
-  const res = await fetch(path, { credentials: 'same-origin', ...options });
+  const requestOptions = options || {};
+  const method = (requestOptions.method || 'GET').toUpperCase();
+  const headers = new Headers(requestOptions.headers || {});
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+    headers.set('X-Requested-With', 'weather-app');
+  }
+  const res = await fetch(path, { credentials: 'same-origin', ...requestOptions, headers });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(data.error || 'Chyba serveru'), { data, status: res.status });
   return data;
@@ -61,11 +67,12 @@ let suggestController = null;
 
 async function fetchSuggest(q) {
   suggestController?.abort();
-  if (!q) return showSuggestions([]);
+  if (!q || q.trim().length < 2) return showSuggestions([]);
   const controller = new AbortController();
   suggestController = controller;
   try {
     const res = await fetch(`/api/suggest?q=${encodeURIComponent(q)}`, { signal: controller.signal });
+    if (!res.ok) throw new Error('Našeptávání není momentálně dostupné.');
     const list = await res.json();
     // dedupe by display (case-insensitive) keeping first (server already scores)
     const map = new Map();
