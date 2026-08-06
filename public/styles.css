@@ -9,6 +9,7 @@ input[type="text"],input{flex:1;padding:12px 14px;border:1px solid #e6e9ef;borde
 input::placeholder{color:#9aa4b2}
 button{background:var(--accent);color:#fff;border:none;padding:10px 18px;border-radius:10px;cursor:pointer;box-shadow:0 6px 14px rgba(37,99,235,0.18)}
 button:hover{transform:translateY(-1px)}
+button:disabled{cursor:wait;opacity:.65;transform:none}
 .result{padding:14px;border-radius:10px;background:#fbfdff;border:1px solid #eef2ff}
 .hidden{display:none}
 .row{display:flex;align-items:center;justify-content:space-between}
@@ -49,12 +50,17 @@ button:hover{transform:translateY(-1px)}
 
 /* Modal */
 .modal{position:fixed;inset:0;background:rgba(7,11,20,0.5);display:flex;align-items:center;justify-content:center;padding:20px;z-index:100}
-.modal-content{background:#fff;padding:18px;border-radius:10px;max-width:520px;width:100%;position:relative}
+.modal-content{background:#fff;padding:24px;border-radius:10px;max-width:560px;width:100%;position:relative;max-height:calc(100vh - 40px);overflow:auto}
 .modal-close{position:absolute;right:10px;top:6px;border:none;background:transparent;font-size:22px;cursor:pointer}
 .auth-form{display:flex;flex-direction:column;gap:8px;margin-top:10px}
-.auth-form input{padding:8px;border:1px solid #e6e9ef;border-radius:8px}
+.auth-form h3{margin:4px 0 8px}
+.auth-form input,.auth-form select{width:100%;padding:10px 12px;border:1px solid #e6e9ef;border-radius:8px;background:#fff;font-size:15px}
+.field{display:flex;flex-direction:column;gap:5px;color:#374151;font-size:14px}
+.field small{color:var(--muted)}
+.field-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .auth-message{font-size:14px;color:var(--muted)}
-.planBtn{background:var(--accent);color:#fff;border:none;padding:8px 10px;border-radius:8px;cursor:pointer;margin-top:8px}
+.auth-message.error-message{color:#b91c1c}
+.auth-message.success-message{color:#166534}
 
 /* ensure modal hidden state keeps it non-interactive */
 .modal.hidden{display:none}
@@ -68,3 +74,9 @@ button:hover{transform:translateY(-1px)}
 .suggestions li{padding:8px 10px;border-radius:6px;cursor:pointer;color:#0f172a}
 .suggestions li[aria-selected="true"],.suggestions li:hover{background:#f1f5ff}
 .suggestions .muted{color:var(--muted);font-size:13px}
+
+@media (max-width:600px){
+  .field-row{grid-template-columns:1fr}
+  .header-row{align-items:flex-start;gap:12px}
+  .right-area{flex-wrap:wrap;justify-content:flex-end}
+}

@@ -1,16 +1,40 @@
+require('dotenv').config({ quiet: true });
+
 const express = require('express');
 const axios = require('axios');
 const path = require('path');
 const crypto = require('crypto');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.OPENWEATHER_API_KEY;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_PUBLISHABLE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY;
+const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY;
 const FREE_LIMIT = 5;
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const AUTH_COOKIE_TTL = 30 * 24 * 60 * 60;
 
 if (!API_KEY) {
   console.warn('Varování: OPENWEATHER_API_KEY není nastaven. Použijte: set OPENWEATHER_API_KEY=... (cmd) nebo $env:OPENWEATHER_API_KEY = "..." (PowerShell)');
+}
+
+if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY || !SUPABASE_SECRET_KEY) {
+  console.warn('Varování: Supabase není nakonfigurován. Nastavte SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY a SUPABASE_SECRET_KEY.');
+}
+
+const supabaseAdmin = SUPABASE_URL && SUPABASE_SECRET_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SECRET_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false }
+    })
+  : null;
+
+function createAuthClient() {
+  if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) return null;
+  return createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false }
+  });
 }
 
 app.use(express.json());
@@ -38,57 +62,229 @@ function parseCookies(req) {
   return out;
 }
 
+function appendCookie(res, cookie) {
+  const current = res.getHeader('Set-Cookie');
+  if (!current) res.setHeader('Set-Cookie', cookie);
+  else res.setHeader('Set-Cookie', Array.isArray(current) ? [...current, cookie] : [current, cookie]);
+}
+
+function serializeCookie(name, value, maxAge) {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  return `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
+}
+
+function setAuthCookies(res, authSession) {
+  appendCookie(res, serializeCookie('wa_access', authSession.access_token, authSession.expires_in || 3600));
+  appendCookie(res, serializeCookie('wa_refresh', authSession.refresh_token, AUTH_COOKIE_TTL));
+}
+
+function clearAuthCookies(res) {
+  appendCookie(res, serializeCookie('wa_access', '', 0));
+  appendCookie(res, serializeCookie('wa_refresh', '', 0));
+}
+
 function getSession(req, res) {
   let sid = parseCookies(req)['wa_sid'];
   if (!sid || !sessions.has(sid)) {
     sid = crypto.randomUUID();
     sessions.set(sid, { count: 0, user: null, lastSeen: Date.now() });
-    res.setHeader('Set-Cookie', `wa_sid=${sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_TTL_MS / 1000}`);
+    appendCookie(res, serializeCookie('wa_sid', sid, SESSION_TTL_MS / 1000));
   }
   const session = sessions.get(sid);
   session.lastSeen = Date.now();
   return session;
 }
 
-function usagePayload(session) {
+async function getProfile(user) {
+  if (!user || !supabaseAdmin) return null;
+  const { data, error } = await supabaseAdmin
+    .from('profiles')
+    .select('first_name, last_name, email, phone, country_code')
+    .eq('id', user.id)
+    .maybeSingle();
+
+  if (error) {
+    console.error('Profile error', error.message);
+    return null;
+  }
+
+  return data;
+}
+
+function publicUser(user, profile) {
+  if (!user) return null;
+  const firstName = profile?.first_name || user.user_metadata?.first_name || '';
+  const lastName = profile?.last_name || user.user_metadata?.last_name || '';
   return {
-    count: session.count,
-    limit: FREE_LIMIT,
-    remaining: session.user ? null : Math.max(0, FREE_LIMIT - session.count),
-    user: session.user
+    id: user.id,
+    name: [firstName, lastName].filter(Boolean).join(' ') || user.email,
+    firstName,
+    lastName,
+    email: profile?.email || user.email,
+    phone: profile?.phone || user.user_metadata?.phone || '',
+    countryCode: profile?.country_code || user.user_metadata?.country_code || ''
   };
 }
 
-app.get('/api/usage', (req, res) => {
-  res.json(usagePayload(getSession(req, res)));
+async function getAuthenticatedUser(req, res) {
+  const auth = createAuthClient();
+  if (!auth) return null;
+
+  const cookies = parseCookies(req);
+  const accessToken = cookies.wa_access;
+  const refreshToken = cookies.wa_refresh;
+
+  if (accessToken) {
+    const { data } = await auth.auth.getUser(accessToken);
+    if (data?.user) return publicUser(data.user, await getProfile(data.user));
+  }
+
+  if (!refreshToken) return null;
+
+  const { data, error } = await auth.auth.refreshSession({ refresh_token: refreshToken });
+  if (error || !data?.session || !data?.user) {
+    clearAuthCookies(res);
+    return null;
+  }
+
+  setAuthCookies(res, data.session);
+  return publicUser(data.user, await getProfile(data.user));
+}
+
+function usagePayload(session, user = null) {
+  return {
+    count: session.count,
+    limit: FREE_LIMIT,
+    remaining: user ? null : Math.max(0, FREE_LIMIT - session.count),
+    user
+  };
+}
+
+app.get('/api/usage', async (req, res) => {
+  const session = getSession(req, res);
+  res.json(usagePayload(session, await getAuthenticatedUser(req, res)));
 });
 
-app.post('/api/usage/reset', (req, res) => {
+app.post('/api/usage/reset', async (req, res) => {
   const session = getSession(req, res);
   session.count = 0;
-  res.json(usagePayload(session));
+  res.json(usagePayload(session, await getAuthenticatedUser(req, res)));
 });
 
-// Mock auth: no password check, only enough state to lift the free limit.
-app.post('/api/auth/login', (req, res) => {
+function requireSupabase(res) {
+  if (createAuthClient() && supabaseAdmin) return true;
+  res.status(503).json({ error: 'Registrace není nakonfigurována.' });
+  return false;
+}
+
+function validateRegistration(body) {
+  const firstName = (body?.firstName || '').toString().trim();
+  const lastName = (body?.lastName || '').toString().trim();
+  const email = (body?.email || '').toString().trim().toLowerCase();
+  const phone = (body?.phone || '').toString().trim();
+  const countryCode = (body?.countryCode || '').toString().trim().toUpperCase();
+  const password = (body?.password || '').toString();
+
+  if (!firstName || firstName.length > 100) return { error: 'Zadejte platné jméno.' };
+  if (!lastName || lastName.length > 100) return { error: 'Zadejte platné příjmení.' };
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { error: 'Zadejte platný e-mail.' };
+  if (!/^[+0-9 ()-]{7,32}$/.test(phone)) return { error: 'Zadejte platné telefonní číslo.' };
+  if (!/^[A-Z]{2}$/.test(countryCode)) return { error: 'Vyberte zemi.' };
+  if (password.length < 8) return { error: 'Heslo musí mít alespoň 8 znaků.' };
+
+  return { firstName, lastName, email, phone, countryCode, password };
+}
+
+function registrationErrorMessage(error) {
+  if (/email rate limit/i.test(error.message)) {
+    return 'Bylo odesláno příliš mnoho potvrzovacích e-mailů. Zkuste to prosím později.';
+  }
+  if (/invalid.*email|email.*invalid/i.test(error.message)) {
+    return 'Tuto e-mailovou adresu nelze použít.';
+  }
+  if (/password/i.test(error.message)) {
+    return 'Heslo nesplňuje bezpečnostní požadavky.';
+  }
+  return 'Registraci se nepodařilo dokončit. Zkuste to prosím znovu.';
+}
+
+app.post('/api/auth/register', async (req, res) => {
+  if (!requireSupabase(res)) return;
+  const input = validateRegistration(req.body);
+  if (input.error) return res.status(400).json({ error: input.error });
+
+  const auth = createAuthClient();
+  const { data, error } = await auth.auth.signUp({
+    email: input.email,
+    password: input.password,
+    options: {
+      emailRedirectTo: `${req.protocol}://${req.get('host')}`,
+      data: {
+        first_name: input.firstName,
+        last_name: input.lastName,
+        phone: input.phone,
+        country_code: input.countryCode
+      }
+    }
+  });
+
+  if (error) {
+    const duplicate = /already registered|already exists/i.test(error.message);
+    return res.status(duplicate ? 409 : 400).json({
+      error: duplicate ? 'Účet s tímto e-mailem už existuje.' : registrationErrorMessage(error)
+    });
+  }
+
+  const anonymousSession = getSession(req, res);
+  if (data.session) {
+    setAuthCookies(res, data.session);
+    anonymousSession.count = 0;
+  }
+
+  const user = data.session && data.user
+    ? publicUser(data.user, await getProfile(data.user))
+    : null;
+
+  res.status(201).json({
+    ...usagePayload(anonymousSession, user),
+    registered: true,
+    confirmationRequired: !data.session,
+    message: data.session
+      ? 'Registrace proběhla úspěšně.'
+      : 'Registrace proběhla úspěšně. Potvrďte prosím e-mail a poté se přihlaste.'
+  });
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  if (!requireSupabase(res)) return;
+  const email = (req.body?.email || '').toString().trim().toLowerCase();
+  const password = (req.body?.password || '').toString();
+  if (!email || !password) return res.status(400).json({ error: 'Zadejte e-mail a heslo.' });
+
+  const auth = createAuthClient();
+  const { data, error } = await auth.auth.signInWithPassword({ email, password });
+  if (error || !data.session || !data.user) {
+    return res.status(401).json({ error: 'Neplatný e-mail nebo heslo, případně e-mail ještě nebyl potvrzen.' });
+  }
+
+  setAuthCookies(res, data.session);
   const session = getSession(req, res);
-  const email = (req.body?.email || '').toString().trim() || 'user@example.com';
-  const name = (req.body?.name || '').toString().trim() || email.split('@')[0];
-  session.user = { name, email, plan: req.body?.plan || null };
   session.count = 0;
-  res.json(usagePayload(session));
+  res.json(usagePayload(session, publicUser(data.user, await getProfile(data.user))));
 });
 
-app.post('/api/auth/plan', (req, res) => {
+app.post('/api/auth/logout', async (req, res) => {
+  const cookies = parseCookies(req);
+  const auth = createAuthClient();
+  if (auth && cookies.wa_access && cookies.wa_refresh) {
+    const { error } = await auth.auth.setSession({
+      access_token: cookies.wa_access,
+      refresh_token: cookies.wa_refresh
+    });
+    if (!error) await auth.auth.signOut();
+  }
+  clearAuthCookies(res);
   const session = getSession(req, res);
-  if (!session.user) return res.status(401).json({ error: 'Nejste přihlášeni' });
-  session.user.plan = (req.body?.plan || 'basic').toString();
-  res.json(usagePayload(session));
-});
-
-app.post('/api/auth/logout', (req, res) => {
-  const session = getSession(req, res);
-  session.user = null;
   res.json(usagePayload(session));
 });
 
@@ -193,11 +389,12 @@ app.get('/api/weather', async (req, res) => {
   if (!city && !(latQ && lonQ)) return res.status(400).json({ error: 'Město nebo souřadnice jsou povinné' });
 
   const session = getSession(req, res);
-  if (!session.user && session.count >= FREE_LIMIT) {
+  const user = await getAuthenticatedUser(req, res);
+  if (!user && session.count >= FREE_LIMIT) {
     return res.status(429).json({
       error: `Bez registrace je možné provést pouze ${FREE_LIMIT} dotazů.`,
       code: 'FREE_LIMIT_REACHED',
-      usage: usagePayload(session)
+      usage: usagePayload(session, user)
     });
   }
 
@@ -248,14 +445,14 @@ app.get('/api/weather', async (req, res) => {
       // ignore air pollution errors
     }
 
-    if (!session.user) session.count += 1;
+    if (!user) session.count += 1;
 
     res.json({
       location: { name, country, lat, lon },
       current: curResp.data,
       forecast: fResp.data,
       air,
-      usage: usagePayload(session)
+      usage: usagePayload(session, user)
     });
   } catch (err) {
     console.error('Weather error', err.response?.data || err.message || err);

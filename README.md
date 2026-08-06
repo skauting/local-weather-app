@@ -3,10 +3,13 @@ Instrukce k spuštění lokální aplikace počasí
 1) Nainstalovat závislosti
    npm install
 
-2) Nastavit OpenWeather API klíč (Windows PowerShell):
-   $env:OPENWEATHER_API_KEY = "<vas-api-klic>"
+2) Zkopírovat `.env.example` jako `.env` a doplnit:
+   - OpenWeather API klíč
+   - Supabase URL
+   - Supabase publishable key
+   - Supabase secret key
 
-   (nebo pro cmd.exe: set OPENWEATHER_API_KEY=<vas-api-klic>)
+   Soubor `.env` je v `.gitignore` a nesmí se commitovat.
 
 3) Spustit server
    npm start
@@ -15,5 +18,7 @@ Instrukce k spuštění lokální aplikace počasí
    http://localhost:3000
 
 Poznámky:
-- API klíč je doporučeno uložit jako environment variable, aby nebyl ve zdrojovém kódu.
+- Hesla zpracovává Supabase Auth a nikdy se neukládají do tabulky `profiles`.
+- Osobní údaje jsou v `public.profiles`, chráněné Row Level Security.
+- Schéma databáze je v `supabase/migrations`.
 - Endpoint serveru volá OpenWeather (current weather) a vrací jen potřebná pole pro UI.

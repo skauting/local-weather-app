@@ -126,7 +126,6 @@ const authModal = document.getElementById('authModal');
 const closeAuth = document.getElementById('closeAuth');
 const loginForm = document.getElementById('loginForm');
 const registerForm = document.getElementById('registerForm');
-const planSelect = document.getElementById('planSelect');
 const authMessage = document.getElementById('authMessage');
 
 menuBtn.addEventListener('click', ()=>{ const expanded = menuBtn.getAttribute('aria-expanded') === 'true'; menuBtn.setAttribute('aria-expanded', String(!expanded)); menuDrop.classList.toggle('hidden'); });
@@ -144,9 +143,14 @@ function closeAuthModal(){
   authModal.classList.add('hidden');
   loginForm.classList.add('hidden');
   registerForm.classList.add('hidden');
-  planSelect.classList.add('hidden');
   lastFocusedBeforeModal?.focus();
   lastFocusedBeforeModal = null;
+}
+
+function setAuthMessage(message, tone = '') {
+  authMessage.textContent = message;
+  authMessage.classList.toggle('error-message', tone === 'error');
+  authMessage.classList.toggle('success-message', tone === 'success');
 }
 
 function openAuth(kind){
@@ -154,10 +158,11 @@ function openAuth(kind){
   authModal.classList.remove('hidden');
   menuDrop.classList.add('hidden');
   menuBtn.setAttribute('aria-expanded', 'false');
-  loginForm.classList.add('hidden'); registerForm.classList.add('hidden'); planSelect.classList.add('hidden');
+  loginForm.classList.add('hidden'); registerForm.classList.add('hidden');
+  setAuthMessage('Bez registrace můžete provést 5 dotazů. Po registraci je hledání bez tohoto limitu.');
   if (kind === 'login'){ loginForm.classList.remove('hidden'); }
   else if (kind === 'register'){ registerForm.classList.remove('hidden'); }
-  authModal.querySelector('.auth-form:not(.hidden) input')?.focus();
+  authModal.querySelector('.auth-form:not(.hidden) input, .auth-form:not(.hidden) select')?.focus();
 }
 
 authModal.addEventListener('click', (e)=>{ if (e.target === authModal) closeAuthModal(); });
@@ -170,7 +175,7 @@ document.addEventListener('keydown', (e)=>{
 // Keep keyboard focus inside the dialog while it is open.
 authModal.addEventListener('keydown', (e)=>{
   if (e.key !== 'Tab') return;
-  const focusable = Array.from(authModal.querySelectorAll('button, input')).filter(el => el.offsetParent !== null);
+  const focusable = Array.from(authModal.querySelectorAll('button, input, select')).filter(el => el.offsetParent !== null);
   if (!focusable.length) return;
   const first = focusable[0];
   const last = focusable[focusable.length - 1];
@@ -178,37 +183,90 @@ authModal.addEventListener('keydown', (e)=>{
   else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
 });
 
-// do register/login (mock)
-document.getElementById('doLogin').addEventListener('click', async ()=>{
-  const email = document.getElementById('loginEmail').value || 'user@example.com';
+loginForm.addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const email = document.getElementById('loginEmail').value.trim();
+  const password = document.getElementById('loginPassword').value;
+  const submit = document.getElementById('doLogin');
+  submit.disabled = true;
+  setAuthMessage('Přihlašuji…');
   try {
-    applyUsage(await api('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }) }));
+    applyUsage(await api('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    }));
     closeAuthModal();
-    alert('Přihlášeno (mock)');
-  } catch (err) { alert(err.message); }
+  } catch (err) {
+    setAuthMessage(err.message, 'error');
+  } finally {
+    submit.disabled = false;
+  }
 });
 
-document.getElementById('doRegister').addEventListener('click', async ()=>{
-  const name = document.getElementById('regName').value || 'user';
-  const email = document.getElementById('regEmail').value || 'user@example.com';
+registerForm.addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const payload = {
+    firstName: document.getElementById('regFirstName').value.trim(),
+    lastName: document.getElementById('regLastName').value.trim(),
+    email: document.getElementById('regEmail').value.trim(),
+    phone: document.getElementById('regPhone').value.trim(),
+    countryCode: document.getElementById('regCountry').value,
+    password: document.getElementById('regPassword').value
+  };
+  const submit = document.getElementById('doRegister');
+  submit.disabled = true;
+  setAuthMessage('Vytvářím účet…');
   try {
-    applyUsage(await api('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, email }) }));
-    loginForm.classList.add('hidden'); registerForm.classList.add('hidden'); planSelect.classList.remove('hidden');
-  } catch (err) { alert(err.message); }
+    const response = await api('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    applyUsage(response);
+    registerForm.reset();
+    if (response.confirmationRequired) {
+      registerForm.classList.add('hidden');
+      loginForm.classList.remove('hidden');
+      setAuthMessage(response.message, 'success');
+      document.getElementById('loginEmail').value = payload.email;
+    } else {
+      closeAuthModal();
+    }
+  } catch (err) {
+    setAuthMessage(err.message, 'error');
+  } finally {
+    submit.disabled = false;
+  }
 });
 
-Array.from(document.getElementsByClassName('planBtn')).forEach(b=>{
-  b.addEventListener('click', async (e)=>{
-    const plan = e.target.dataset.plan || 'basic';
-    try {
-      applyUsage(await api('/api/auth/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan }) }));
-      closeAuthModal();
-      alert('Děkujeme — plán zvolen (mock).');
-    } catch (err) { alert(err.message); }
-  });
-});
+function populateCountries() {
+  const select = document.getElementById('regCountry');
+  const codes = 'AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS XK YE YT ZA ZM ZW'.split(' ');
+  const names = typeof Intl.DisplayNames === 'function'
+    ? new Intl.DisplayNames(['cs'], { type: 'region' })
+    : null;
+
+  const options = codes
+    .map(code => ({ code, name: names?.of(code) || code }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'cs'));
+
+  for (const { code, name } of options) {
+    const option = document.createElement('option');
+    option.value = code;
+    option.textContent = name;
+    select.appendChild(option);
+  }
+
+  try {
+    const browserRegion = new Intl.Locale(navigator.language).region;
+    if (browserRegion && codes.includes(browserRegion)) select.value = browserRegion;
+    else if (navigator.language.toLowerCase().startsWith('cs')) select.value = 'CZ';
+  } catch (e) { /* keep the placeholder */ }
+}
 
 // initialize UI
+populateCountries();
 updateUsageUI(); updateMenuUI(); loadUsage();
 
 // Reset button handler (clear usage)
