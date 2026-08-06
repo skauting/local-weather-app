@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Profil</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="card profile-card">
+    <div class="header-row">
+      <div>
+        <h1>Profil</h1>
+        <p class="meta admin-subtitle">Vaše údaje, kredity a avatar</p>
+      </div>
+      <div class="right-area">
+        <a id="adminNavLink" class="menu-link hidden" href="/admin.html">Administrace</a>
+        <a class="menu-link" href="/">Zpět na počasí</a>
+        <button id="logoutBtn" class="muted" type="button">Odhlásit</button>
+      </div>
+    </div>
+
+    <div id="profileError" class="error hidden" role="alert"></div>
+    <div id="profileMessage" class="auth-message success-message hidden" role="status"></div>
+
+    <div id="profileGate" class="admin-gate">
+      <p class="meta">Načítám profil…</p>
+    </div>
+
+    <section id="profilePanel" class="profile-panel hidden">
+      <div class="profile-layout">
+        <div class="profile-avatar-block">
+          <div id="avatarPreview" class="avatar-preview" aria-hidden="true">?</div>
+          <label class="avatar-upload-label">
+            <span>Nahrát avatar</span>
+            <input id="avatarInput" type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" hidden />
+          </label>
+          <p class="meta avatar-hint">JPG, PNG nebo WebP, max. 2 MB</p>
+        </div>
+
+        <form id="profileForm" class="profile-form">
+          <div class="field-row">
+            <label class="field">
+              <span>Jméno</span>
+              <input id="firstName" name="firstName" maxlength="100" required autocomplete="given-name" />
+            </label>
+            <label class="field">
+              <span>Příjmení</span>
+              <input id="lastName" name="lastName" maxlength="100" required autocomplete="family-name" />
+            </label>
+          </div>
+
+          <label class="field">
+            <span>E-mail</span>
+            <input id="email" type="email" readonly />
+          </label>
+
+          <label class="field">
+            <span>Telefon</span>
+            <input id="phone" type="tel" autocomplete="tel" minlength="7" maxlength="32" placeholder="+420 123 456 789" required />
+          </label>
+
+          <label class="field">
+            <span>Země</span>
+            <div class="country-combobox">
+              <input id="countrySearch" type="text" autocomplete="off" placeholder="Začněte psát název země…" required aria-autocomplete="list" aria-controls="countryList" />
+              <input id="countryCode" type="hidden" name="countryCode" required />
+              <ul id="countryList" class="country-list hidden" role="listbox" aria-label="Seznam zemí"></ul>
+            </div>
+          </label>
+
+          <div class="profile-meta-row">
+            <div class="usage credits-badge">Kredity: <span id="creditsCount">0</span></div>
+            <div class="role-pill" id="rolePill">user</div>
+          </div>
+
+          <label class="field">
+            <span>Bio <small id="bioCount">(0/500)</small></span>
+            <textarea id="bio" name="bio" maxlength="500" rows="4" placeholder="Krátce o sobě…"></textarea>
+          </label>
+
+          <button id="saveProfile" type="submit">Uložit změny</button>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <script src="countries.js"></script>
+  <script src="profile.js"></script>
+</body>
+</html>

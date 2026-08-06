@@ -4,6 +4,7 @@ const express = require('express');
 const axios = require('axios');
 const path = require('path');
 const crypto = require('crypto');
+const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
@@ -21,10 +22,18 @@ const MAX_ANONYMOUS_SESSIONS = Math.max(
 const MAX_RATE_LIMIT_KEYS = 10000;
 const AUTH_COOKIE_TTL = 30 * 24 * 60 * 60;
 const STARTING_CREDITS = 5;
+const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
+const BIO_MAX_LENGTH = 500;
+const AVATAR_MIME_TO_EXT = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp'
+};
 const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
   .split(',')
   .map(value => value.trim().toLowerCase())
   .filter(Boolean);
+const PROFILE_FIELDS = 'first_name, last_name, email, phone, country_code, role, credits, is_blocked, avatar_url, bio';
 
 if (!API_KEY) {
   console.warn('Varování: OPENWEATHER_API_KEY není nastaven. Použijte: set OPENWEATHER_API_KEY=... (cmd) nebo $env:OPENWEATHER_API_KEY = "..." (PowerShell)');
@@ -48,7 +57,17 @@ function createAuthClient() {
 }
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+
+const avatarUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: AVATAR_MAX_BYTES },
+  fileFilter(req, file, cb) {
+    if (AVATAR_MIME_TO_EXT[file.mimetype]) return cb(null, true);
+    const err = new Error('INVALID_AVATAR_TYPE');
+    err.code = 'INVALID_AVATAR_TYPE';
+    cb(err);
+  }
+});
 
 // In-memory guest sessions. Map insertion order acts as an LRU queue.
 const sessions = new Map();
@@ -200,6 +219,7 @@ function requireWeatherConfig(req, res, next) {
 const generalApiLimit = rateLimit('api', 120, 60 * 1000);
 const authApiLimit = rateLimit('auth', 20, 15 * 60 * 1000);
 const adminApiLimit = rateLimit('admin', 60, 60 * 1000);
+const profileApiLimit = rateLimit('profile', 40, 60 * 1000);
 const suggestApiLimit = rateLimit('suggest', 60, 60 * 1000);
 const weatherApiLimit = rateLimit('weather', 30, 60 * 1000);
 
@@ -207,10 +227,9 @@ app.use('/api', generalApiLimit, protectStateChangingRequests);
 
 async function getProfile(user) {
   if (!user || !supabaseAdmin) return null;
-  const profileFields = 'first_name, last_name, email, phone, country_code, role, credits, is_blocked';
   const { data, error } = await supabaseAdmin
     .from('profiles')
-    .select(profileFields)
+    .select(PROFILE_FIELDS)
     .eq('id', user.id)
     .maybeSingle();
 
@@ -228,7 +247,7 @@ async function getProfile(user) {
       .from('profiles')
       .update({ role: 'admin' })
       .eq('id', user.id)
-      .select(profileFields)
+      .select(PROFILE_FIELDS)
       .maybeSingle();
     if (!promoteError && promoted) return promoted;
   }
@@ -250,7 +269,9 @@ function publicUser(user, profile) {
     countryCode: profile?.country_code || user.user_metadata?.country_code || '',
     role: profile?.role || 'user',
     credits: typeof profile?.credits === 'number' ? profile.credits : STARTING_CREDITS,
-    isBlocked: Boolean(profile?.is_blocked)
+    isBlocked: Boolean(profile?.is_blocked),
+    avatarUrl: profile?.avatar_url || '',
+    bio: typeof profile?.bio === 'string' ? profile.bio : ''
   };
 }
 
@@ -314,6 +335,29 @@ async function requireAdmin(req, res) {
     return null;
   }
   return user;
+}
+
+async function requireLogin(req, res) {
+  const user = await getAuthenticatedUser(req, res);
+  if (!user) {
+    res.status(401).json({ error: 'Nejste přihlášeni.', code: 'UNAUTHORIZED' });
+    return null;
+  }
+  return user;
+}
+
+async function requireAdminPage(req, res, next) {
+  const user = await getAuthenticatedUser(req, res);
+  if (!user || user.role !== 'admin') {
+    return res.status(403).type('html').send(`<!doctype html>
+<html lang="cs"><head><meta charset="utf-8"><title>Přístup odepřen</title>
+<link rel="stylesheet" href="/styles.css"></head>
+<body><main class="card"><h1>Přístup odepřen</h1>
+<p class="meta">Administrace je dostupná jen přihlášeným administrátorům.</p>
+<p><a class="menu-link" href="/">Zpět na počasí</a></p>
+</main></body></html>`);
+  }
+  return next();
 }
 
 async function consumeUserCredit(userId) {
@@ -470,6 +514,134 @@ app.post('/api/auth/logout', async (req, res) => {
   clearAuthCookies(res);
   const session = getSession(req, res);
   res.json(usagePayload(session));
+});
+
+app.get('/api/profile', profileApiLimit, async (req, res) => {
+  if (!requireSupabase(res)) return;
+  const user = await requireLogin(req, res);
+  if (!user) return;
+  res.json({ user });
+});
+
+app.patch('/api/profile', profileApiLimit, async (req, res) => {
+  if (!requireSupabase(res)) return;
+  const user = await requireLogin(req, res);
+  if (!user) return;
+
+  const firstName = (req.body?.firstName ?? user.firstName).toString().trim();
+  const lastName = (req.body?.lastName ?? user.lastName).toString().trim();
+  const bio = (req.body?.bio ?? user.bio ?? '').toString();
+  const phone = (req.body?.phone ?? user.phone ?? '').toString().trim();
+  const countryCode = (req.body?.countryCode ?? user.countryCode ?? '').toString().trim().toUpperCase();
+
+  if (!firstName || firstName.length > 100) {
+    return res.status(400).json({ error: 'Zadejte platné jméno.' });
+  }
+  if (!lastName || lastName.length > 100) {
+    return res.status(400).json({ error: 'Zadejte platné příjmení.' });
+  }
+  if (!/^[+0-9 ()-]{7,32}$/.test(phone)) {
+    return res.status(400).json({ error: 'Zadejte platné telefonní číslo.' });
+  }
+  if (!/^[A-Z]{2}$/.test(countryCode)) {
+    return res.status(400).json({ error: 'Vyberte zemi.' });
+  }
+  if (bio.length > BIO_MAX_LENGTH) {
+    return res.status(400).json({
+      error: `Bio může mít nejvýše ${BIO_MAX_LENGTH} znaků.`,
+      code: 'BIO_TOO_LONG'
+    });
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('profiles')
+    .update({
+      first_name: firstName,
+      last_name: lastName,
+      phone,
+      country_code: countryCode,
+      bio
+    })
+    .eq('id', user.id)
+    .select(PROFILE_FIELDS)
+    .maybeSingle();
+
+  if (error || !data) {
+    console.error('Profile update error', error?.message);
+    return res.status(500).json({ error: 'Profil se nepodařilo uložit.' });
+  }
+
+  res.json({ user: publicUser({ id: user.id, email: user.email }, data) });
+});
+
+app.post('/api/profile/avatar', profileApiLimit, (req, res) => {
+  if (!requireSupabase(res)) return;
+
+  avatarUpload.single('avatar')(req, res, async (uploadError) => {
+    if (uploadError) {
+      if (uploadError.code === 'LIMIT_FILE_SIZE' || uploadError.code === 'INVALID_AVATAR_TYPE') {
+        return res.status(400).json({
+          error: uploadError.code === 'LIMIT_FILE_SIZE'
+            ? 'Avatar může mít nejvýše 2 MB.'
+            : 'Povolené formáty: JPG, PNG nebo WebP.',
+          code: uploadError.code
+        });
+      }
+      return res.status(400).json({ error: 'Nahrání avatara selhalo.' });
+    }
+
+    try {
+      const user = await requireLogin(req, res);
+      if (!user) return;
+      if (!req.file) {
+        return res.status(400).json({ error: 'Vyberte soubor s obrázkem.' });
+      }
+
+      const ext = AVATAR_MIME_TO_EXT[req.file.mimetype];
+      const objectPath = `${user.id}/avatar.${ext}`;
+
+      // Remove previous avatar variants so only one file remains.
+      const { data: existing } = await supabaseAdmin.storage.from('avatars').list(user.id);
+      if (existing?.length) {
+        await supabaseAdmin.storage
+          .from('avatars')
+          .remove(existing.map(item => `${user.id}/${item.name}`));
+      }
+
+      const { error: uploadStorageError } = await supabaseAdmin.storage
+        .from('avatars')
+        .upload(objectPath, req.file.buffer, {
+          contentType: req.file.mimetype,
+          upsert: true,
+          cacheControl: '3600'
+        });
+
+      if (uploadStorageError) {
+        console.error('Avatar upload error', uploadStorageError.message);
+        return res.status(500).json({ error: 'Avatar se nepodařilo nahrát.' });
+      }
+
+      const { data: publicData } = supabaseAdmin.storage.from('avatars').getPublicUrl(objectPath);
+      const avatarUrl = `${publicData.publicUrl}?t=${Date.now()}`;
+
+      const { data, error } = await supabaseAdmin
+        .from('profiles')
+        .update({ avatar_url: avatarUrl })
+        .eq('id', user.id)
+        .select(PROFILE_FIELDS)
+        .maybeSingle();
+
+      if (error || !data) {
+        console.error('Avatar profile update error', error?.message);
+        return res.status(500).json({ error: 'Avatar se nepodařilo uložit do profilu.' });
+      }
+
+      res.json({ user: publicUser({ id: user.id, email: user.email }, data) });
+    } catch (e) {
+      console.error('Avatar endpoint error', e.message);
+      res.status(500).json({ error: 'Avatar se nepodařilo nahrát.' });
+    }
+  });
 });
 
 // Helper to normalize
@@ -813,5 +985,9 @@ app.get('/api/admin/searches', adminApiLimit, async (req, res) => {
     }))
   });
 });
+
+app.get(['/admin.html', '/admin.js'], requireAdminPage);
+
+app.use(express.static(path.join(__dirname, 'public')));
 
 app.listen(PORT, () => console.log(`Server běží na http://localhost:${PORT}`));

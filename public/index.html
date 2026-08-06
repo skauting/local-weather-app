@@ -14,11 +14,15 @@
         <div id="usage" class="usage">Pokus: <span id="usageCount">0</span>/<span id="usageLimit">5</span></div>
         <div id="creditsBadge" class="usage credits-badge hidden">Kredity: <span id="creditsCount">0</span></div>
         <button id="resetBtn" class="resetBtn" title="Resetovat počet pokusů">Resetovat</button>
+        <a id="avatarLink" class="avatar-link hidden" href="/profile.html" title="Profil" aria-label="Otevřít profil">
+          <span id="headerAvatar" class="header-avatar">?</span>
+        </a>
         <div class="menu" id="menu">
           <button id="menuBtn" aria-haspopup="true" aria-expanded="false">Přihlásit / Registrovat ▾</button>
           <div id="menuDrop" class="dropdown hidden" role="menu">
             <button id="openLogin" class="menu-item" role="menuitem">Přihlásit se</button>
             <button id="openRegister" class="menu-item" role="menuitem">Registrovat</button>
+            <a id="profileLink" class="menu-item hidden" role="menuitem" href="/profile.html">Profil</a>
             <a id="adminLink" class="menu-item hidden" role="menuitem" href="/admin.html">Administrace</a>
             <button id="logoutBtn" class="menu-item hidden" role="menuitem">Odhlásit</button>
           </div>
@@ -104,6 +108,7 @@
 
   </main>
 
+  <script src="countries.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

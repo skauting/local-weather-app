@@ -60,26 +60,60 @@ function updateUsageUI(){
   }
 }
 
+function userInitials(user) {
+  const a = (user.firstName || '').trim().charAt(0);
+  const b = (user.lastName || '').trim().charAt(0);
+  const text = `${a}${b}`.toUpperCase();
+  return text || (user.email || '?').charAt(0).toUpperCase();
+}
+
+function updateHeaderAvatar() {
+  const avatarLink = document.getElementById('avatarLink');
+  const headerAvatar = document.getElementById('headerAvatar');
+  if (!avatarLink || !headerAvatar) return;
+
+  if (!currentUser) {
+    avatarLink.classList.add('hidden');
+    headerAvatar.classList.remove('has-image');
+    headerAvatar.textContent = '?';
+    return;
+  }
+
+  avatarLink.classList.remove('hidden');
+  if (currentUser.avatarUrl) {
+    headerAvatar.innerHTML = `<img src="${escapeHtml(currentUser.avatarUrl)}" alt="">`;
+    headerAvatar.classList.add('has-image');
+  } else {
+    headerAvatar.textContent = userInitials(currentUser);
+    headerAvatar.classList.remove('has-image');
+  }
+}
+
 function updateMenuUI(){
   const logoutBtn = document.getElementById('logoutBtn');
   const menuBtn = document.getElementById('menuBtn');
   const openLogin = document.getElementById('openLogin');
   const openRegister = document.getElementById('openRegister');
   const adminLink = document.getElementById('adminLink');
+  const profileLink = document.getElementById('profileLink');
 
   if (currentUser && currentUser.name) {
     menuBtn.textContent = currentUser.name + ' ▾';
     logoutBtn.classList.remove('hidden');
     openLogin.classList.add('hidden');
     openRegister.classList.add('hidden');
-    adminLink.classList.toggle('hidden', currentUser.role !== 'admin');
+    const isAdmin = currentUser.role === 'admin';
+    adminLink.classList.toggle('hidden', !isAdmin);
+    profileLink.classList.toggle('hidden', isAdmin);
   } else {
     menuBtn.textContent = 'Přihlásit / Registrovat ▾';
     logoutBtn.classList.add('hidden');
     openLogin.classList.remove('hidden');
     openRegister.classList.remove('hidden');
     adminLink.classList.add('hidden');
+    profileLink.classList.add('hidden');
   }
+  updateHeaderAvatar();
 }
 
 
@@ -280,14 +314,8 @@ registerForm.addEventListener('submit', async (e)=>{
 
 function populateCountries() {
   const select = document.getElementById('regCountry');
-  const codes = 'AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS XK YE YT ZA ZM ZW'.split(' ');
-  const names = typeof Intl.DisplayNames === 'function'
-    ? new Intl.DisplayNames(['cs'], { type: 'region' })
-    : null;
-
-  const options = codes
-    .map(code => ({ code, name: names?.of(code) || code }))
-    .sort((a, b) => a.name.localeCompare(b.name, 'cs'));
+  const options = getCountryList();
+  const codes = options.map(item => item.code);
 
   for (const { code, name } of options) {
     const option = document.createElement('option');
