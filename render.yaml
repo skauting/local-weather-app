@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: local-weather-app
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: OPENWEATHER_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: ADMIN_EMAILS
+        sync: false
+      - key: APP_ORIGIN
+        sync: false
+      - key: MAX_ANONYMOUS_SESSIONS
+        value: "5000"

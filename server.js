@@ -57,6 +57,7 @@ function createAuthClient() {
 }
 
 app.use(express.json());
+app.set('trust proxy', 1);
 
 const avatarUpload = multer({
   storage: multer.memoryStorage(),
