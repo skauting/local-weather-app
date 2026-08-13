@@ -25,6 +25,7 @@ let chatBusy = false;
 let freeUsage = 0;
 let freeLimit = 5;
 let currentUser = null;
+let chatHistory = [];
 
 function applyUsage(usage) {
   if (!usage) return;
@@ -144,6 +145,18 @@ function setChatEmpty(message) {
   chatMessages.innerHTML = `<div class="chat-empty">${escapeHtml(message)}</div>`;
 }
 
+function renderChatHistory() {
+  if (!chatMessages) return;
+  if (!chatHistory.length) {
+    setChatEmpty('Chat je připravený.');
+    return;
+  }
+  chatMessages.innerHTML = '';
+  for (const item of chatHistory) {
+    appendChat(item.role, item.text);
+  }
+}
+
 function appendChat(role, text) {
   if (!chatMessages) return;
   const bubble = document.createElement('div');
@@ -252,17 +265,12 @@ if (chatToggle && chatPanel) {
     const opening = chatPanel.classList.contains('hidden');
     if (opening) {
       chatPanel.classList.remove('hidden');
-      if (chatMessages && !chatMessages.children.length) {
-        setChatEmpty('Chat je připravený.');
-      }
       chatToggle.setAttribute('aria-expanded', 'true');
+      renderChatHistory();
       focusChatInput();
     } else {
       chatPanel.classList.add('hidden');
       chatToggle.setAttribute('aria-expanded', 'false');
-    }
-    if (!chatPanel.classList.contains('hidden') && chatMessages && !chatMessages.children.length) {
-      setChatEmpty('Chat je připravený.');
     }
   });
 }
@@ -286,7 +294,7 @@ if (chatForm && chatInput && chatMessages) {
     chatBusy = true;
     chatSend.disabled = true;
     chatInput.disabled = true;
-    appendChat('user', message);
+    chatHistory.push({ role: 'user', text: message });
     chatInput.value = '';
     setChatEmpty('Načítám odpověď…');
     try {
@@ -295,11 +303,11 @@ if (chatForm && chatInput && chatMessages) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message })
       });
-      setChatEmpty('');
-      appendChat('assistant', data.message || '...');
+      chatHistory.push({ role: 'assistant', text: data.message || '...' });
+      renderChatHistory();
     } catch (err) {
-      setChatEmpty('');
-      appendChat('system', err.message);
+      chatHistory.push({ role: 'system', text: err.message });
+      renderChatHistory();
     } finally {
       chatBusy = false;
       chatSend.disabled = false;
