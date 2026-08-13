@@ -1,44 +1,46 @@
-Instrukce k spuÅ¡tÄ›nÃ­ lokÃ¡lnÃ­ aplikace poÄasÃ­
+Instrukce k spuštení lokální aplikace pocasí
 
-1) Nainstalovat zÃ¡vislosti
+1) Nainstalovat závislosti
    npm install
 
-2) ZkopÃ­rovat `.env.example` jako `.env` a doplnit:
-   - OpenWeather API klÃ­Ä
+2) Zkopírovat `.env.example` jako `.env` a doplnit:
+   - OpenWeather API klíc
    - Supabase URL
    - Supabase publishable key
    - Supabase secret key
-   - DeepSeek API klÃ­Ä
-   - ADMIN_EMAILS (ÄÃ¡rkou oddÄ›lenÃ© e-maily, kterÃ© se po pÅ™ihlÃ¡Å¡enÃ­ stanou adminy)
+   - DeepSeek API klíc
+   - ADMIN_EMAILS (cárkou oddelené e-maily, které se po prihlášení stanou adminy)
 
-   Soubor `.env` je v `.gitignore` a nesmÃ­ se commitovat.
+   Soubor `.env` je v `.gitignore` a nesmí se commitovat.
 
 3) Spustit server
-   - lokÃ¡lnÄ› (firemnÃ­ TLS / systÃ©movÃ© CA): `npm run start:local`
-   - bÄ›Å¾nÄ› / na hostingu: `npm start`
+   - lokálne (firemní TLS / systémové CA): `npm run start:local`
+   - bene / na hostingu: `npm start`
 
-4) OtevÅ™Ã­t v prohlÃ­Å¾eÄi
+4) Otevrít v prohlíeci
    http://localhost:3000
 
 ## Deploy na Render
 
-RepozitÃ¡Å™ obsahuje Blueprint [`render.yaml`](render.yaml).
+Repozitár obsahuje Blueprint [`render.yaml`](render.yaml).
 
-1. Na [Render](https://dashboard.render.com) vytvoÅ™ **Blueprint** z tohoto GitHub repa (nebo Web Service podle `render.yaml`).
-2. DoplÅˆ Environment Variables (hodnoty ze svÃ©ho `.env`):
+1. Na [Render](https://dashboard.render.com) vytvor **Blueprint** z tohoto GitHub repa (nebo Web Service podle `render.yaml`).
+2. Dopln Environment Variables (hodnoty ze svého `.env`):
    - `OPENWEATHER_API_KEY`
    - `SUPABASE_URL`
    - `SUPABASE_PUBLISHABLE_KEY`
    - `SUPABASE_SECRET_KEY`
    - `ADMIN_EMAILS`
-   - `APP_ORIGIN` = finÃ¡lnÃ­ URL sluÅ¾by, napÅ™. `https://local-weather-app.onrender.com`
-3. V Supabase â†’ Authentication â†’ URL Configuration nastav:
+   - `APP_ORIGIN` = finální URL sluby, napr. `https://local-weather-app.onrender.com`
+   - `DEEPSEEK_API_KEY`
+   - `DEEPSEEK_MODEL` = `deepseek-v4-pro`
+3. V Supabase ? Authentication ? URL Configuration nastav:
    - **Site URL** = Render URL
-   - **Redirect URLs** = stejnÃ¡ URL (pÅ™Ã­padnÄ› s `/**`)
+   - **Redirect URLs** = stejná URL (prípadne s `/**`)
 
-PoznÃ¡mky:
-- Hesla zpracovÃ¡vÃ¡ Supabase Auth a nikdy se neuklÃ¡dajÃ­ do tabulky `profiles`.
-- OsobnÃ­ Ãºdaje jsou v `public.profiles`, chrÃ¡nÄ›nÃ© Row Level Security.
-- SchÃ©ma databÃ¡ze je v `supabase/migrations`.
-- Endpoint serveru volÃ¡ OpenWeather (current weather) a vracÃ­ jen potÅ™ebnÃ¡ pole pro UI.
-- Free plan na Renderu po neÄinnosti usÃ­nÃ¡; prvnÃ­ request po spÃ¡nku mÅ¯Å¾e trvat dÃ©le.
+Poznámky:
+- Hesla zpracovává Supabase Auth a nikdy se neukládají do tabulky `profiles`.
+- Osobní údaje jsou v `public.profiles`, chránené Row Level Security.
+- Schéma databáze je v `supabase/migrations`.
+- Endpoint serveru volá OpenWeather (current weather) a vrací jen potrebná pole pro UI.
+- Free plan na Renderu po necinnosti usíná; první request po spánku mue trvat déle.

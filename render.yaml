@@ -22,5 +22,9 @@ services:
         sync: false
       - key: APP_ORIGIN
         sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: DEEPSEEK_MODEL
+        value: deepseek-v4-pro
       - key: MAX_ANONYMOUS_SESSIONS
         value: "5000"
