@@ -54,6 +54,29 @@ Pokud existuje v�ce worktrees, `./run-worktree.sh` nab�dne v�ber. Pr�pad
 
 - `./run-worktree.sh scaling-winner`
 
+## Verzov�n�
+
+Aplikace pou��v� **Semantic Versioning + build metadata**:
+
+- `MAJOR.MINOR.PATCH` je release verze v `package.json`
+- server a build skripty k n� prid�vaj� metadata:
+  - `+build.<cislo>` pro CI build
+  - `+<short-sha>` pro commit-based build
+  - `+local` pro lok�ln� b�h bez build identifik�toru
+
+Pravidla:
+
+- `PATCH` pro bugfix bez zmeny chov�n� API
+- `MINOR` pro nov� funkce bez breaking changes
+- `MAJOR` pro breaking changes
+
+P��klady:
+
+- `1.1.0`
+- `1.1.0+build.42`
+- `1.1.0+e790d4d`
+- `1.1.0+local`
+
 ## Deploy na Render
 
 Repozit�r obsahuje Blueprint [`render.yaml`](render.yaml).

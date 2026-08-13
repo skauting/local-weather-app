@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const multer = require('multer');
 const OpenAI = require('openai');
 const { createClient } = require('@supabase/supabase-js');
+const { version: APP_BASE_VERSION } = require('./package.json');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -16,7 +17,27 @@ const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-pro';
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY;
 const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY;
-const APP_VERSION = `1.0.0+${process.env.RENDER_GIT_COMMIT?.slice(0, 7) || process.env.GIT_COMMIT?.slice(0, 7) || process.env.BUILD_ID || 'local'}`;
+function normalizeBuildToken(value) {
+  return (value || '').toString().trim().replace(/[^0-9A-Za-z-]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+function createAppVersion() {
+  const buildNumber = normalizeBuildToken(process.env.BUILD_NUMBER || process.env.GITHUB_RUN_NUMBER);
+  const buildId = normalizeBuildToken(process.env.BUILD_ID);
+  const gitSha = normalizeBuildToken(
+    process.env.RENDER_GIT_COMMIT ||
+    process.env.GIT_COMMIT ||
+    process.env.VERCEL_GIT_COMMIT_SHA ||
+    process.env.GITHUB_SHA
+  );
+
+  if (buildNumber) return `${APP_BASE_VERSION}+build.${buildNumber}`;
+  if (buildId) return `${APP_BASE_VERSION}+build.${buildId}`;
+  if (gitSha) return `${APP_BASE_VERSION}+${gitSha.slice(0, 7)}`;
+  return `${APP_BASE_VERSION}+local`;
+}
+
+const APP_VERSION = createAppVersion();
 const CHAT_TIMEOUT_MS = 60000;
 const CHAT_MAX_MESSAGES = 10;
 const CHAT_IDLE_CLOSE_MS = 30 * 60 * 1000;
