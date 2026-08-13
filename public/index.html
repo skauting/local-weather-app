@@ -49,6 +49,21 @@
 
     <footer class="foot">Data od OpenWeather</footer>
 
+    <section class="chat-widget" aria-label="Chat s AI">
+      <button id="chatToggle" class="chat-toggle" type="button" aria-expanded="false">Chat</button>
+      <div id="chatPanel" class="chat-panel hidden">
+        <div class="chat-header">
+          <strong>AI chat</strong>
+          <button id="chatClose" class="chat-close" type="button" aria-label="Zavřít chat">×</button>
+        </div>
+        <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
+        <form id="chatForm" class="chat-form">
+          <textarea id="chatInput" rows="3" maxlength="4000" placeholder="Napište zprávu…"></textarea>
+          <button id="chatSend" type="submit">Odeslat</button>
+        </form>
+      </div>
+    </section>
+
     <!-- Authentication modal -->
     <div id="authModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="Přihlášení nebo registrace">
       <div class="modal-content">

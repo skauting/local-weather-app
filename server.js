@@ -5,14 +5,13 @@ const axios = require('axios');
 const path = require('path');
 const crypto = require('crypto');
 const multer = require('multer');
-const { createClient } = require('@supabase/supabase-js');
+const OpenAI = require('openai');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.OPENWEATHER_API_KEY;
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_PUBLISHABLE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY;
-const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY;
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
+const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-pro';
 const FREE_LIMIT = 5;
 const SESSION_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_ANONYMOUS_SESSIONS = Math.max(
@@ -33,27 +32,21 @@ const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
   .split(',')
   .map(value => value.trim().toLowerCase())
   .filter(Boolean);
-const PROFILE_FIELDS = 'first_name, last_name, email, phone, country_code, role, credits, is_blocked, avatar_url, bio';
 
 if (!API_KEY) {
   console.warn('Varování: OPENWEATHER_API_KEY není nastaven. Použijte: set OPENWEATHER_API_KEY=... (cmd) nebo $env:OPENWEATHER_API_KEY = "..." (PowerShell)');
 }
 
-if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY || !SUPABASE_SECRET_KEY) {
-  console.warn('Varování: Supabase není nakonfigurován. Nastavte SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY a SUPABASE_SECRET_KEY.');
+if (!DEEPSEEK_API_KEY) {
+  console.warn('Varování: DEEPSEEK_API_KEY není nastaven.');
 }
-
-const supabaseAdmin = SUPABASE_URL && SUPABASE_SECRET_KEY
-  ? createClient(SUPABASE_URL, SUPABASE_SECRET_KEY, {
-      auth: { persistSession: false, autoRefreshToken: false }
-    })
+const deepseekClient = DEEPSEEK_API_KEY
+  ? new OpenAI({ apiKey: DEEPSEEK_API_KEY, baseURL: 'https://api.deepseek.com' })
   : null;
 
-function createAuthClient() {
-  if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) return null;
-  return createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false }
-  });
+function getAuthenticatedUser(req, res) {
+  const session = getSession(req, res);
+  return session.user || null;
 }
 
 app.use(express.json());
@@ -107,16 +100,6 @@ function appendCookie(res, cookie) {
 function serializeCookie(name, value, maxAge) {
   const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
   return `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
-}
-
-function setAuthCookies(res, authSession) {
-  appendCookie(res, serializeCookie('wa_access', authSession.access_token, authSession.expires_in || 3600));
-  appendCookie(res, serializeCookie('wa_refresh', authSession.refresh_token, AUTH_COOKIE_TTL));
-}
-
-function clearAuthCookies(res) {
-  appendCookie(res, serializeCookie('wa_access', '', 0));
-  appendCookie(res, serializeCookie('wa_refresh', '', 0));
 }
 
 function getSession(req, res) {
@@ -226,95 +209,6 @@ const weatherApiLimit = rateLimit('weather', 30, 60 * 1000);
 
 app.use('/api', generalApiLimit, protectStateChangingRequests);
 
-async function getProfile(user) {
-  if (!user || !supabaseAdmin) return null;
-  const { data, error } = await supabaseAdmin
-    .from('profiles')
-    .select(PROFILE_FIELDS)
-    .eq('id', user.id)
-    .maybeSingle();
-
-  if (error) {
-    console.error('Profile error', error.message);
-    return null;
-  }
-
-  if (!data) return null;
-
-  // Bootstrap admins from ADMIN_EMAILS without exposing that path to clients.
-  const email = (data.email || user.email || '').toLowerCase();
-  if (ADMIN_EMAILS.includes(email) && data.role !== 'admin') {
-    const { data: promoted, error: promoteError } = await supabaseAdmin
-      .from('profiles')
-      .update({ role: 'admin' })
-      .eq('id', user.id)
-      .select(PROFILE_FIELDS)
-      .maybeSingle();
-    if (!promoteError && promoted) return promoted;
-  }
-
-  return data;
-}
-
-function publicUser(user, profile) {
-  if (!user) return null;
-  const firstName = profile?.first_name || user.user_metadata?.first_name || '';
-  const lastName = profile?.last_name || user.user_metadata?.last_name || '';
-  return {
-    id: user.id,
-    name: [firstName, lastName].filter(Boolean).join(' ') || user.email,
-    firstName,
-    lastName,
-    email: profile?.email || user.email,
-    phone: profile?.phone || user.user_metadata?.phone || '',
-    countryCode: profile?.country_code || user.user_metadata?.country_code || '',
-    role: profile?.role || 'user',
-    credits: typeof profile?.credits === 'number' ? profile.credits : STARTING_CREDITS,
-    isBlocked: Boolean(profile?.is_blocked),
-    avatarUrl: profile?.avatar_url || '',
-    bio: typeof profile?.bio === 'string' ? profile.bio : ''
-  };
-}
-
-async function resolveAuthenticatedUser(req, res) {
-  const auth = createAuthClient();
-  if (!auth) return null;
-
-  const cookies = parseCookies(req);
-  const accessToken = cookies.wa_access;
-  const refreshToken = cookies.wa_refresh;
-
-  if (accessToken) {
-    const { data } = await auth.auth.getUser(accessToken);
-    if (data?.user) {
-      const profile = await getProfile(data.user);
-      return { authUser: data.user, profile, user: publicUser(data.user, profile) };
-    }
-  }
-
-  if (!refreshToken) return null;
-
-  const { data, error } = await auth.auth.refreshSession({ refresh_token: refreshToken });
-  if (error || !data?.session || !data?.user) {
-    clearAuthCookies(res);
-    return null;
-  }
-
-  setAuthCookies(res, data.session);
-  const profile = await getProfile(data.user);
-  return { authUser: data.user, profile, user: publicUser(data.user, profile) };
-}
-
-async function getAuthenticatedUser(req, res) {
-  const resolved = await resolveAuthenticatedUser(req, res);
-  if (!resolved?.user) return null;
-  if (resolved.user.isBlocked) {
-    clearAuthCookies(res);
-    return null;
-  }
-  return resolved.user;
-}
-
 function usagePayload(session, user = null) {
   return {
     count: session.count,
@@ -325,47 +219,41 @@ function usagePayload(session, user = null) {
   };
 }
 
-async function requireAdmin(req, res) {
-  const user = await getAuthenticatedUser(req, res);
-  if (!user) {
-    res.status(401).json({ error: 'Nejste přihlášeni.', code: 'UNAUTHORIZED' });
-    return null;
+app.post('/api/chat', async (req, res) => {
+  if (!deepseekClient) {
+    return res.status(503).json({ error: 'Chat není nakonfigurován.' });
   }
-  if (user.role !== 'admin') {
-    res.status(403).json({ error: 'Přístup pouze pro administrátory.', code: 'FORBIDDEN' });
-    return null;
-  }
-  return user;
-}
 
-async function requireLogin(req, res) {
-  const user = await getAuthenticatedUser(req, res);
-  if (!user) {
-    res.status(401).json({ error: 'Nejste přihlášeni.', code: 'UNAUTHORIZED' });
-    return null;
-  }
-  return user;
-}
+  const message = (req.body?.message || '').toString().trim();
+  if (!message) return res.status(400).json({ error: 'Zadejte zprávu.' });
+  if (message.length > 4000) return res.status(400).json({ error: 'Zpráva je příliš dlouhá.' });
 
-async function requireAdminPage(req, res, next) {
-  const user = await getAuthenticatedUser(req, res);
-  if (!user || user.role !== 'admin') {
-    return res.status(403).type('html').send(`<!doctype html>
-<html lang="cs"><head><meta charset="utf-8"><title>Přístup odepřen</title>
-<link rel="stylesheet" href="/styles.css"></head>
-<body><main class="card"><h1>Přístup odepřen</h1>
-<p class="meta">Administrace je dostupná jen přihlášeným administrátorům.</p>
-<p><a class="menu-link" href="/">Zpět na počasí</a></p>
-</main></body></html>`);
-  }
-  return next();
-}
+  try {
+    const systemPrompt = [
+      'Jsi užitečný český asistent v aplikaci počasí.',
+      'Piš stručně, věcně a česky.',
+      'Pomáhej s počasím, aplikací a obecnými dotazy.',
+      'Odpovídej přirozeně a bezpečně.'
+    ].join(' ');
 
-async function consumeUserCredit(userId) {
-  const { data, error } = await supabaseAdmin.rpc('consume_credit', { p_user_id: userId });
-  if (error) throw error;
-  return typeof data === 'number' ? data : -1;
-}
+    const completion = await deepseekClient.chat.completions.create({
+      model: DEEPSEEK_MODEL,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: message }
+      ],
+      stream: false,
+      temperature: 0.6
+    });
+
+    const reply = completion.choices?.[0]?.message?.content?.trim() || 'Odpověď se nepodařilo vytvořit.';
+    res.json({ message: reply });
+  } catch (err) {
+    console.error('Chat error', err.response?.data || err.message || err);
+    res.status(500).json({ error: 'Chat se nepodařilo odeslat.' });
+  }
+});
+
 
 async function logSearch(userId, city) {
   const label = normalizeSearch(city).slice(0, 100);
@@ -376,6 +264,7 @@ async function logSearch(userId, city) {
   });
   if (error) console.error('Search log error', error.message);
 }
+
 
 function isUuid(value) {
   return /^[0-9a-f-]{36}$/i.test((value || '').toString());
@@ -477,172 +366,15 @@ app.post('/api/auth/register', authApiLimit, async (req, res) => {
 });
 
 app.post('/api/auth/login', authApiLimit, async (req, res) => {
-  if (!requireSupabase(res)) return;
-  const email = (req.body?.email || '').toString().trim().toLowerCase();
-  const password = (req.body?.password || '').toString();
-  if (!email || !password) return res.status(400).json({ error: 'Zadejte e-mail a heslo.' });
-
-  const auth = createAuthClient();
-  const { data, error } = await auth.auth.signInWithPassword({ email, password });
-  if (error || !data.session || !data.user) {
-    return res.status(401).json({ error: 'Neplatný e-mail nebo heslo, případně e-mail ještě nebyl potvrzen.' });
-  }
-
-  const profile = await getProfile(data.user);
-  if (profile?.is_blocked) {
-    return res.status(403).json({
-      error: 'Váš účet byl zablokován. Kontaktujte administrátora.',
-      code: 'USER_BLOCKED'
-    });
-  }
-
-  setAuthCookies(res, data.session);
   const session = getSession(req, res);
-  session.count = 0;
-  res.json(usagePayload(session, publicUser(data.user, profile)));
+  session.user = { id: crypto.randomUUID(), name: 'Host', role: 'user', credits: STARTING_CREDITS };
+  res.json(usagePayload(session, session.user));
 });
 
 app.post('/api/auth/logout', async (req, res) => {
-  const cookies = parseCookies(req);
-  const auth = createAuthClient();
-  if (auth && cookies.wa_access && cookies.wa_refresh) {
-    const { error } = await auth.auth.setSession({
-      access_token: cookies.wa_access,
-      refresh_token: cookies.wa_refresh
-    });
-    if (!error) await auth.auth.signOut();
-  }
-  clearAuthCookies(res);
   const session = getSession(req, res);
+  session.user = null;
   res.json(usagePayload(session));
-});
-
-app.get('/api/profile', profileApiLimit, async (req, res) => {
-  if (!requireSupabase(res)) return;
-  const user = await requireLogin(req, res);
-  if (!user) return;
-  res.json({ user });
-});
-
-app.patch('/api/profile', profileApiLimit, async (req, res) => {
-  if (!requireSupabase(res)) return;
-  const user = await requireLogin(req, res);
-  if (!user) return;
-
-  const firstName = (req.body?.firstName ?? user.firstName).toString().trim();
-  const lastName = (req.body?.lastName ?? user.lastName).toString().trim();
-  const bio = (req.body?.bio ?? user.bio ?? '').toString();
-  const phone = (req.body?.phone ?? user.phone ?? '').toString().trim();
-  const countryCode = (req.body?.countryCode ?? user.countryCode ?? '').toString().trim().toUpperCase();
-
-  if (!firstName || firstName.length > 100) {
-    return res.status(400).json({ error: 'Zadejte platné jméno.' });
-  }
-  if (!lastName || lastName.length > 100) {
-    return res.status(400).json({ error: 'Zadejte platné příjmení.' });
-  }
-  if (!/^[+0-9 ()-]{7,32}$/.test(phone)) {
-    return res.status(400).json({ error: 'Zadejte platné telefonní číslo.' });
-  }
-  if (!/^[A-Z]{2}$/.test(countryCode)) {
-    return res.status(400).json({ error: 'Vyberte zemi.' });
-  }
-  if (bio.length > BIO_MAX_LENGTH) {
-    return res.status(400).json({
-      error: `Bio může mít nejvýše ${BIO_MAX_LENGTH} znaků.`,
-      code: 'BIO_TOO_LONG'
-    });
-  }
-
-  const { data, error } = await supabaseAdmin
-    .from('profiles')
-    .update({
-      first_name: firstName,
-      last_name: lastName,
-      phone,
-      country_code: countryCode,
-      bio
-    })
-    .eq('id', user.id)
-    .select(PROFILE_FIELDS)
-    .maybeSingle();
-
-  if (error || !data) {
-    console.error('Profile update error', error?.message);
-    return res.status(500).json({ error: 'Profil se nepodařilo uložit.' });
-  }
-
-  res.json({ user: publicUser({ id: user.id, email: user.email }, data) });
-});
-
-app.post('/api/profile/avatar', profileApiLimit, (req, res) => {
-  if (!requireSupabase(res)) return;
-
-  avatarUpload.single('avatar')(req, res, async (uploadError) => {
-    if (uploadError) {
-      if (uploadError.code === 'LIMIT_FILE_SIZE' || uploadError.code === 'INVALID_AVATAR_TYPE') {
-        return res.status(400).json({
-          error: uploadError.code === 'LIMIT_FILE_SIZE'
-            ? 'Avatar může mít nejvýše 2 MB.'
-            : 'Povolené formáty: JPG, PNG nebo WebP.',
-          code: uploadError.code
-        });
-      }
-      return res.status(400).json({ error: 'Nahrání avatara selhalo.' });
-    }
-
-    try {
-      const user = await requireLogin(req, res);
-      if (!user) return;
-      if (!req.file) {
-        return res.status(400).json({ error: 'Vyberte soubor s obrázkem.' });
-      }
-
-      const ext = AVATAR_MIME_TO_EXT[req.file.mimetype];
-      const objectPath = `${user.id}/avatar.${ext}`;
-
-      // Remove previous avatar variants so only one file remains.
-      const { data: existing } = await supabaseAdmin.storage.from('avatars').list(user.id);
-      if (existing?.length) {
-        await supabaseAdmin.storage
-          .from('avatars')
-          .remove(existing.map(item => `${user.id}/${item.name}`));
-      }
-
-      const { error: uploadStorageError } = await supabaseAdmin.storage
-        .from('avatars')
-        .upload(objectPath, req.file.buffer, {
-          contentType: req.file.mimetype,
-          upsert: true,
-          cacheControl: '3600'
-        });
-
-      if (uploadStorageError) {
-        console.error('Avatar upload error', uploadStorageError.message);
-        return res.status(500).json({ error: 'Avatar se nepodařilo nahrát.' });
-      }
-
-      const { data: publicData } = supabaseAdmin.storage.from('avatars').getPublicUrl(objectPath);
-      const avatarUrl = `${publicData.publicUrl}?t=${Date.now()}`;
-
-      const { data, error } = await supabaseAdmin
-        .from('profiles')
-        .update({ avatar_url: avatarUrl })
-        .eq('id', user.id)
-        .select(PROFILE_FIELDS)
-        .maybeSingle();
-
-      if (error || !data) {
-        console.error('Avatar profile update error', error?.message);
-        return res.status(500).json({ error: 'Avatar se nepodařilo uložit do profilu.' });
-      }
-
-      res.json({ user: publicUser({ id: user.id, email: user.email }, data) });
-    } catch (e) {
-      console.error('Avatar endpoint error', e.message);
-      res.status(500).json({ error: 'Avatar se nepodařilo nahrát.' });
-    }
-  });
 });
 
 // Helper to normalize
@@ -852,142 +584,6 @@ app.get('/api/weather', weatherApiLimit, requireWeatherConfig, async (req, res) 
     res.status(err.response?.status || 500).json({ error: msg });
   }
 });
-
-app.get('/api/admin/users', adminApiLimit, async (req, res) => {
-  if (!requireSupabase(res)) return;
-  const admin = await requireAdmin(req, res);
-  if (!admin) return;
-
-  const { data, error } = await supabaseAdmin
-    .from('profiles')
-    .select('id, first_name, last_name, email, phone, country_code, role, credits, is_blocked, created_at')
-    .order('created_at', { ascending: true });
-
-  if (error) {
-    console.error('Admin users error', error.message);
-    return res.status(500).json({ error: 'Nepodařilo se načíst uživatele.' });
-  }
-
-  res.json({
-    users: (data || []).map(row => ({
-      id: row.id,
-      firstName: row.first_name,
-      lastName: row.last_name,
-      email: row.email,
-      phone: row.phone,
-      countryCode: row.country_code,
-      role: row.role,
-      credits: row.credits,
-      isBlocked: Boolean(row.is_blocked),
-      status: row.is_blocked ? 'blocked' : 'active',
-      createdAt: row.created_at
-    }))
-  });
-});
-
-app.post('/api/admin/users/:id/credits', adminApiLimit, async (req, res) => {
-  if (!requireSupabase(res)) return;
-  const admin = await requireAdmin(req, res);
-  if (!admin) return;
-
-  const userId = (req.params.id || '').toString();
-  const amount = Number.parseInt(req.body?.amount, 10);
-  if (!isUuid(userId)) {
-    return res.status(400).json({ error: 'Neplatné ID uživatele.' });
-  }
-  if (!Number.isInteger(amount) || amount < 1 || amount > 100000) {
-    return res.status(400).json({ error: 'Zadejte platný počet kreditů (1–100000).' });
-  }
-
-  const { data, error } = await supabaseAdmin.rpc('add_credits', {
-    p_user_id: userId,
-    p_amount: amount
-  });
-
-  if (error) {
-    console.error('Admin top-up error', error.message);
-    const missing = /not found/i.test(error.message);
-    return res.status(missing ? 404 : 500).json({
-      error: missing ? 'Uživatel nebyl nalezen.' : 'Dobití kreditů se nezdařilo.'
-    });
-  }
-
-  res.json({
-    id: userId,
-    credits: data,
-    added: amount,
-    message: `Přidáno ${amount} kreditů.`
-  });
-});
-
-app.post('/api/admin/users/:id/block', adminApiLimit, async (req, res) => {
-  if (!requireSupabase(res)) return;
-  const admin = await requireAdmin(req, res);
-  if (!admin) return;
-
-  const userId = (req.params.id || '').toString();
-  const blocked = req.body?.blocked;
-  if (!isUuid(userId)) {
-    return res.status(400).json({ error: 'Neplatné ID uživatele.' });
-  }
-  if (typeof blocked !== 'boolean') {
-    return res.status(400).json({ error: 'Chybí parametr blocked (true/false).' });
-  }
-  if (userId === admin.id && blocked) {
-    return res.status(400).json({ error: 'Nemůžete zablokovat vlastní účet.' });
-  }
-
-  const { data, error } = await supabaseAdmin.rpc('set_user_blocked', {
-    p_user_id: userId,
-    p_blocked: blocked
-  });
-
-  if (error) {
-    console.error('Admin block error', error.message);
-    const missing = /not found/i.test(error.message);
-    return res.status(missing ? 404 : 500).json({
-      error: missing ? 'Uživatel nebyl nalezen.' : 'Změna stavu účtu se nezdařila.'
-    });
-  }
-
-  res.json({
-    id: data.id,
-    isBlocked: Boolean(data.is_blocked),
-    status: data.is_blocked ? 'blocked' : 'active',
-    message: data.is_blocked ? 'Uživatel byl zablokován.' : 'Uživatel byl aktivován.'
-  });
-});
-
-app.get('/api/admin/searches', adminApiLimit, async (req, res) => {
-  if (!requireSupabase(res)) return;
-  const admin = await requireAdmin(req, res);
-  if (!admin) return;
-
-  const limit = Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 50));
-  const { data, error } = await supabaseAdmin
-    .from('search_logs')
-    .select('id, city, searched_at, user_id, profiles!inner(first_name, last_name, email)')
-    .order('searched_at', { ascending: false })
-    .limit(limit);
-
-  if (error) {
-    console.error('Admin searches error', error.message);
-    return res.status(500).json({ error: 'Nepodařilo se načíst historii vyhledávání.' });
-  }
-
-  res.json({
-    searches: (data || []).map(row => ({
-      id: row.id,
-      city: row.city,
-      searchedAt: row.searched_at,
-      userId: row.user_id,
-      userName: [row.profiles?.first_name, row.profiles?.last_name].filter(Boolean).join(' ') || row.profiles?.email,
-      userEmail: row.profiles?.email || ''
-    }))
-  });
-});
-
-app.get(['/admin.html', '/admin.js'], requireAdminPage);
 
 app.use(express.static(path.join(__dirname, 'public')));
 

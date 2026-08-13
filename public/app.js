@@ -5,6 +5,13 @@ const resultEl = document.getElementById('result');
 const errorEl = document.getElementById('error');
 const rawEl = document.getElementById('raw');
 const toggleRaw = document.getElementById('toggleRaw');
+const chatToggle = document.getElementById('chatToggle');
+const chatPanel = document.getElementById('chatPanel');
+const chatClose = document.getElementById('chatClose');
+const chatMessages = document.getElementById('chatMessages');
+const chatForm = document.getElementById('chatForm');
+const chatInput = document.getElementById('chatInput');
+const chatSend = document.getElementById('chatSend');
 
 let latestRaw = null;
 let suggestions = [];
@@ -12,6 +19,7 @@ let selectedIndex = -1;
 let selectedLat = null;
 let selectedLon = null;
 let selectedName = null;
+let chatBusy = false;
 
 // Auth / usage state mirrors the server session; the server stays authoritative.
 let freeUsage = 0;
@@ -114,6 +122,14 @@ function updateMenuUI(){
     profileLink.classList.add('hidden');
   }
   updateHeaderAvatar();
+  updateChatAvailability();
+}
+
+function updateChatAvailability() {
+  if (!chatToggle || !chatPanel) return;
+  chatToggle.classList.remove('hidden');
+  chatPanel.classList.add('hidden');
+  chatToggle.setAttribute('aria-expanded', 'false');
 }
 
 
@@ -122,6 +138,28 @@ function escapeHtml(value) {
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
   ));
 }
+
+function setChatEmpty(message) {
+  if (!chatMessages) return;
+  chatMessages.innerHTML = `<div class="chat-empty">${escapeHtml(message)}</div>`;
+}
+
+function appendChat(role, text) {
+  if (!chatMessages) return;
+  const bubble = document.createElement('div');
+  bubble.className = `chat-bubble ${role}`;
+  bubble.textContent = text;
+  chatMessages.appendChild(bubble);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function focusChatInput() {
+  if (!chatInput) return;
+  setTimeout(() => {
+    chatInput.focus();
+  }, 0);
+}
+
 
 function debounce(fn, wait = 300) {
   let t;
@@ -208,6 +246,80 @@ logoutBtn.addEventListener('click', async ()=>{
   catch (err) { alert(err.message); }
 });
 closeAuth.addEventListener('click', ()=>{ closeAuthModal(); });
+
+if (chatToggle && chatPanel) {
+  chatToggle.addEventListener('click', () => {
+    const opening = chatPanel.classList.contains('hidden');
+    if (opening) {
+      chatPanel.classList.remove('hidden');
+      if (chatMessages && !chatMessages.children.length) {
+        setChatEmpty('Chat je připravený.');
+      }
+      chatToggle.setAttribute('aria-expanded', 'true');
+      focusChatInput();
+    } else {
+      chatPanel.classList.add('hidden');
+      chatToggle.setAttribute('aria-expanded', 'false');
+    }
+    if (!chatPanel.classList.contains('hidden') && chatMessages && !chatMessages.children.length) {
+      setChatEmpty('Chat je připravený.');
+    }
+  });
+}
+if (chatClose && chatPanel) {
+  chatClose.addEventListener('click', () => {
+    chatPanel.classList.add('hidden');
+    chatToggle.setAttribute('aria-expanded', 'false');
+  });
+}
+if (chatForm && chatInput && chatMessages) {
+  chatInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.altKey) {
+      e.preventDefault();
+      chatForm.requestSubmit();
+    }
+  });
+  chatForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const message = chatInput.value.trim();
+    if (!message || chatBusy) return;
+    chatBusy = true;
+    chatSend.disabled = true;
+    chatInput.disabled = true;
+    appendChat('user', message);
+    chatInput.value = '';
+    setChatEmpty('Načítám odpověď…');
+    try {
+      const data = await api('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message })
+      });
+      setChatEmpty('');
+      appendChat('assistant', data.message || '...');
+    } catch (err) {
+      setChatEmpty('');
+      appendChat('system', err.message);
+    } finally {
+      chatBusy = false;
+      chatSend.disabled = false;
+      chatInput.disabled = false;
+    }
+  });
+  chatInput.addEventListener('input', () => {
+    if (chatInput.value.indexOf('\n') !== -1) {
+      chatInput.value = chatInput.value.replace(/\n/g, '');
+    }
+  });
+}
+
+document.addEventListener('click', (e) => {
+  if (!chatPanel || !chatToggle) return;
+  if (chatPanel.classList.contains('hidden')) return;
+  if (chatPanel.contains(e.target) || chatToggle.contains(e.target)) return;
+  chatPanel.classList.add('hidden');
+  chatToggle.setAttribute('aria-expanded', 'false');
+});
 
 let lastFocusedBeforeModal = null;
 
