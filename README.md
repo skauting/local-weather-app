@@ -1,79 +1,79 @@
-Instrukce k spu�ten� lok�ln� aplikace pocas�
+Instrukce k spuštění lokální aplikace počasí
 
-1) Nainstalovat z�vislosti
+1) Nainstalovat závislosti
    npm install
 
-2) Zkop�rovat `.env.example` jako `.env` a doplnit:
-   - OpenWeather API kl�c
+2) Zkopírovat `.env.example` jako `.env` a doplnit:
+   - OpenWeather API klíč
    - Supabase URL
    - Supabase publishable key
    - Supabase secret key
-   - DeepSeek API kl�c
-   - ADMIN_EMAILS (c�rkou oddelen� e-maily, kter� se po prihl�en� stanou adminy)
+   - DeepSeek API klíč
+   - ADMIN_EMAILS (čárkou oddělené e-maily, které se po přihlášení stanou adminy)
 
-   Soubor `.env` je v `.gitignore` a nesm� se commitovat.
+   Soubor `.env` je v `.gitignore` a nesmí se commitovat.
 
 3) Spustit server
-   - lok�lne (firemn� TLS / syst�mov� CA): `npm run start:local`
-   - be�ne / na hostingu: `npm start`
+   - lokálně (firemní TLS / systémová CA): `npm run start:local`
+   - běžně / na hostingu: `npm start`
 
-4) Otevr�t v prohl�eci
+4) Otevřít v prohlížeči
    http://localhost:3000
 
-## Doporucen� workflow: main vs. worktree
+## Doporučený workflow: main vs. worktree
 
-Pro jasn� oddelen� behu aplikace pou��vej:
+Pro jasné oddělení běhu aplikace používej:
 
 - **main checkout** na portu `3000`
 - **worktree** na portu `3001`
 
 Prakticky:
 
-1. V hlavn�m checkoutu spust:
+1. V hlavním checkoutu spusť:
    - `npm run start:main`
    - nebo `npm run dev:main`
-2. Ve worktree spust:
+2. Ve worktree spusť:
    - `npm run start:worktree`
    - nebo `npm run dev:worktree`
 
-D�le�it�: server v�dy serv�ruje soubory z adres�re, ze kter�ho ho spust�. Stejn� skript tedy spus�:
+Důležité: server vždy servíruje soubory z adresáře, ze kterého ho spustíš. Stejný skript tedy spusť:
 
-- v `.../local-weather-app` pro hlavn� verzi
+- v `.../local-weather-app` pro hlavní verzi
 - v `.../copilot-worktrees/local-weather-app/<nazev-worktree>` pro worktree verzi
 
-Pokud testuje� registraci nebo potvrzovac� e-maily i na worktree portu `3001`, pridat tuto URL tak� do Supabase **Redirect URLs**.
+Pokud testuješ registraci nebo potvrzovací e-maily i na worktree portu `3001`, přidej tuto URL také do Supabase **Redirect URLs**.
 
-### Bash skripty v rootu repozit�re
+### Bash skripty v rootu repozitáře
 
-Pro pohodln� spou�ten� z rootu repozit�re jsou k dispozici:
+Pro pohodlné spouštění z rootu repozitáře jsou k dispozici:
 
-- `./run-main.sh` - spust� hlavn� checkout na portu `3000` v restartovac�m re�imu
-- `./run-worktree.sh` - spust� worktree na portu `3001` v restartovac�m re�imu
+- `./run-main.sh` - spustí hlavní checkout na portu `3000` v restartovacím režimu
+- `./run-worktree.sh` - spustí worktree na portu `3001` v restartovacím režimu
 
-Pokud existuje v�ce worktrees, `./run-worktree.sh` nab�dne v�ber. Pr�padne lze zadat cast n�zvu worktree:
+Pokud existuje více worktrees, `./run-worktree.sh` nabídne výběr. Případně lze zadat část názvu worktree:
 
 - `./run-worktree.sh scaling-winner`
 
-Pokud vybran� worktree nem� vlastn� `.env`, `./run-worktree.sh` automaticky na�te `.env` z hlavn�ho checkoutu. Vlastn� `.env` ve worktree m� prednost.
-Pokud worktree nem� vlastn� `node_modules`, `./run-worktree.sh` automaticky vytvo�� symlink na `node_modules` z hlavn�ho checkoutu. Pokud `node_modules` neexistuje ani tam, je pot�eba spustit `npm install` v hlavn�m checkoutu.
+Pokud vybraný worktree nemá vlastní `.env`, `./run-worktree.sh` automaticky načte `.env` z hlavního checkoutu. Vlastní `.env` ve worktree má přednost.
+Pokud worktree nemá vlastní `node_modules`, `./run-worktree.sh` automaticky vytvoří symlink na `node_modules` z hlavního checkoutu. Pokud `node_modules` neexistuje ani tam, je potřeba spustit `npm install` v hlavním checkoutu.
 
-## Verzov�n�
+## Verzování
 
-Aplikace pou��v� **Semantic Versioning + build metadata**:
+Aplikace používá **Semantic Versioning + build metadata**:
 
 - `MAJOR.MINOR.PATCH` je release verze v `package.json`
-- server a build skripty k n� prid�vaj� metadata:
+- server a build skripty k ní přidávají metadata:
   - `+build.<cislo>` pro CI build
   - `+<short-sha>` pro commit-based build
-  - `+local` pro lok�ln� b�h bez build identifik�toru
+  - `+local` pro lokální běh bez build identifikátoru
 
 Pravidla:
 
-- `PATCH` pro bugfix bez zmeny chov�n� API
-- `MINOR` pro nov� funkce bez breaking changes
+- `PATCH` pro bugfix bez změny chování API
+- `MINOR` pro nové funkce bez breaking changes
 - `MAJOR` pro breaking changes
 
-P��klady:
+Příklady:
 
 - `1.1.0`
 - `1.1.0+build.42`
@@ -82,25 +82,26 @@ P��klady:
 
 ## Deploy na Render
 
-Repozit�r obsahuje Blueprint [`render.yaml`](render.yaml).
+Repozitář obsahuje Blueprint [`render.yaml`](render.yaml).
 
-1. Na [Render](https://dashboard.render.com) vytvor **Blueprint** z tohoto GitHub repa (nebo Web Service podle `render.yaml`).
-2. Dopln Environment Variables (hodnoty ze sv�ho `.env`):
+1. Na [Render](https://dashboard.render.com) vytvoř **Blueprint** z tohoto GitHub repa (nebo Web Service podle `render.yaml`).
+2. Doplň Environment Variables (hodnoty ze svého `.env`):
    - `OPENWEATHER_API_KEY`
    - `SUPABASE_URL`
    - `SUPABASE_PUBLISHABLE_KEY`
    - `SUPABASE_SECRET_KEY`
    - `ADMIN_EMAILS`
-   - `APP_ORIGIN` = fin�ln� URL slu�by, napr. `https://local-weather-app.onrender.com`
+   - `APP_ORIGIN` = finální URL služby, např. `https://local-weather-app.onrender.com`
    - `DEEPSEEK_API_KEY`
    - `DEEPSEEK_MODEL` = `deepseek-v4-pro`
-3. V Supabase ? Authentication ? URL Configuration nastav:
+3. V Supabase -> Authentication -> URL Configuration nastav:
    - **Site URL** = Render URL
-   - **Redirect URLs** = stejn� URL (pr�padne s `/**`)
+   - **Redirect URLs** = stejná URL (případně s `/**`)
 
-Pozn�mky:
-- Hesla zpracov�v� Supabase Auth a nikdy se neukl�daj� do tabulky `profiles`.
-- Osobn� �daje jsou v `public.profiles`, chr�nen� Row Level Security.
-- Sch�ma datab�ze je v `supabase/migrations`.
-- Endpoint serveru vol� OpenWeather (current weather) a vrac� jen potrebn� pole pro UI.
-- Free plan na Renderu po necinnosti us�n�; prvn� request po sp�nku mu�e trvat d�le.
+Poznámky:
+- Hesla zpracovává Supabase Auth a nikdy se neukládají do tabulky `profiles`.
+- Osobní údaje jsou v `public.profiles`, chráněné Row Level Security.
+- Schéma databáze je v `supabase/migrations`.
+- Endpoint serveru volá OpenWeather (current weather) a vrací jen potřebná pole pro UI.
+- Chat používá DeepSeek jen pro pochopení dotazu a kontextu; samotnou odpověď skládá z živých dat z OpenWeatherMap podle nalezeného města.
+- Free plan na Renderu po nečinnosti usíná; první request po spánku může trvat déle.
