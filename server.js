@@ -13,6 +13,7 @@ const API_KEY = process.env.OPENWEATHER_API_KEY;
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-pro';
 const APP_VERSION = `1.0.0+${process.env.RENDER_GIT_COMMIT?.slice(0, 7) || process.env.GIT_COMMIT?.slice(0, 7) || process.env.BUILD_ID || 'local'}`;
+const CHAT_TIMEOUT_MS = 15000;
 const FREE_LIMIT = 5;
 const SESSION_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_ANONYMOUS_SESSIONS = Math.max(
@@ -220,6 +221,34 @@ function usagePayload(session, user = null) {
   };
 }
 
+function formatChatError(err) {
+  const status = err.status || err.response?.status || 500;
+  const responseBody = typeof err.response?.data === 'string' ? err.response.data : '';
+  const rawMessage =
+    err.response?.data?.error?.message ||
+    err.response?.data?.message ||
+    responseBody ||
+    err.message ||
+    'Chat se nepodařilo odeslat.';
+
+  if (
+    /<html[\s>]/i.test(rawMessage) ||
+    /web page blocked/i.test(rawMessage) ||
+    /blocked sites/i.test(rawMessage) ||
+    /api\.deepseek\.com/i.test(rawMessage)
+  ) {
+    return {
+      status: 503,
+      message: 'Firemní síť blokuje přístup k DeepSeek API. Mimo VPN by chat měl fungovat.'
+    };
+  }
+
+  return {
+    status,
+    message: rawMessage.length > 300 ? `${rawMessage.slice(0, 300)}…` : rawMessage
+  };
+}
+
 app.post('/api/chat', async (req, res) => {
   if (!deepseekClient) {
     return res.status(503).json({ error: 'Chat není nakonfigurován.' });
@@ -237,21 +266,31 @@ app.post('/api/chat', async (req, res) => {
       'Odpovídej přirozeně a bezpečně.'
     ].join(' ');
 
-    const completion = await deepseekClient.chat.completions.create({
-      model: DEEPSEEK_MODEL,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: message }
-      ],
-      stream: false,
-      temperature: 0.6
-    });
+    const completion = await Promise.race([
+      deepseekClient.chat.completions.create({
+        model: DEEPSEEK_MODEL,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: message }
+        ],
+        stream: false,
+        temperature: 0.6
+      }),
+      new Promise((_, reject) => {
+        setTimeout(() => {
+          const timeoutError = new Error('Chat momentálně neodpovídá. Zkuste to prosím znovu.');
+          timeoutError.status = 504;
+          reject(timeoutError);
+        }, CHAT_TIMEOUT_MS);
+      })
+    ]);
 
     const reply = completion.choices?.[0]?.message?.content?.trim() || 'Odpověď se nepodařilo vytvořit.';
     res.json({ message: reply });
   } catch (err) {
     console.error('Chat error', err.response?.data || err.message || err);
-    res.status(500).json({ error: 'Chat se nepodařilo odeslat.' });
+    const formatted = formatChatError(err);
+    res.status(formatted.status).json({ error: formatted.message });
   }
 });
 

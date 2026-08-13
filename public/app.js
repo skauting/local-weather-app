@@ -156,6 +156,12 @@ function setChatEmpty(message) {
   chatMessages.innerHTML = `<div class="chat-empty">${escapeHtml(message)}</div>`;
 }
 
+function setChatStatus(message) {
+  const statusEl = document.getElementById('chatStatus');
+  if (!statusEl) return;
+  statusEl.textContent = message || '';
+}
+
 function renderChatHistory() {
   if (!chatMessages) return;
   if (!chatHistory.length) {
@@ -180,6 +186,7 @@ function appendChat(role, text) {
 function focusChatInput() {
   if (!chatInput) return;
   setTimeout(() => {
+    chatInput.disabled = false;
     chatInput.focus();
   }, 0);
 }
@@ -278,10 +285,12 @@ if (chatToggle && chatPanel) {
       chatPanel.classList.remove('hidden');
       chatToggle.setAttribute('aria-expanded', 'true');
       renderChatHistory();
+      setChatStatus('');
       focusChatInput();
     } else {
       chatPanel.classList.add('hidden');
       chatToggle.setAttribute('aria-expanded', 'false');
+      setChatStatus('');
     }
   });
 }
@@ -289,6 +298,7 @@ if (chatClose && chatPanel) {
   chatClose.addEventListener('click', () => {
     chatPanel.classList.add('hidden');
     chatToggle.setAttribute('aria-expanded', 'false');
+    setChatStatus('');
   });
 }
 if (chatForm && chatInput && chatMessages) {
@@ -309,23 +319,35 @@ if (chatForm && chatInput && chatMessages) {
     chatInput.value = '';
     renderChatHistory();
     setChatStatus('Načítám odpověď…');
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
       const data = await api('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message })
+        body: JSON.stringify({ message }),
+        signal: controller.signal
       });
       chatHistory.push({ role: 'assistant', text: data.message || '...' });
       renderChatHistory();
       setChatStatus('');
+      focusChatInput();
     } catch (err) {
-      chatHistory.push({ role: 'system', text: err.message });
+      const errorMessage = err.name === 'AbortError'
+        ? 'Chat momentálně neodpovídá. Zkuste to prosím znovu.'
+        : err.message;
+      chatHistory.push({ role: 'system', text: errorMessage });
       renderChatHistory();
       setChatStatus('Chyba při odeslání.');
+      focusChatInput();
     } finally {
+      clearTimeout(timeoutId);
       chatBusy = false;
       chatSend.disabled = false;
       chatInput.disabled = false;
+      if (chatPanel && !chatPanel.classList.contains('hidden')) {
+        focusChatInput();
+      }
     }
   });
   chatInput.addEventListener('input', () => {
