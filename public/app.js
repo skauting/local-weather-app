@@ -20,6 +20,7 @@ let selectedLat = null;
 let selectedLon = null;
 let selectedName = null;
 let chatBusy = false;
+const CHAT_MAX_MESSAGES = 10;
 
 // Auth / usage state mirrors the server session; the server stays authoritative.
 let freeUsage = 0;
@@ -29,9 +30,20 @@ let chatHistory = [];
 
 function applyUsage(usage) {
   if (!usage) return;
+  const previousUserId = currentUser?.id || null;
   if (typeof usage.count === 'number') freeUsage = usage.count;
   if (typeof usage.limit === 'number') freeLimit = usage.limit;
   currentUser = usage.user || null;
+  const nextUserId = currentUser?.id || null;
+  if (nextUserId !== previousUserId) {
+    if (!nextUserId) {
+      chatHistory = [];
+      setChatStatus('');
+      setChatEmpty('Pro chat se přihlaste.');
+    } else {
+      loadChatHistory();
+    }
+  }
   updateUsageUI();
   updateMenuUI();
 }
@@ -51,6 +63,16 @@ async function api(path, options) {
 
 async function loadUsage() {
   try { applyUsage(await api('/api/usage')); } catch (e) { /* keep defaults */ }
+}
+
+async function refreshAuthState() {
+  try {
+    applyUsage(await api('/api/usage'));
+  } catch (e) {
+    currentUser = null;
+    updateMenuUI();
+  }
+  return Boolean(currentUser);
 }
 
 function updateUsageUI(){
@@ -139,9 +161,18 @@ async function loadAppVersion() {
 
 function updateChatAvailability() {
   if (!chatToggle || !chatPanel) return;
-  chatToggle.classList.remove('hidden');
+  const enabled = Boolean(currentUser);
+  chatToggle.classList.toggle('hidden', !enabled);
+  chatToggle.disabled = !enabled;
   chatPanel.classList.add('hidden');
   chatToggle.setAttribute('aria-expanded', 'false');
+  if (chatInput) chatInput.disabled = !enabled || chatBusy;
+  if (chatSend) chatSend.disabled = !enabled || chatBusy;
+  if (!enabled) {
+    if (chatInput) chatInput.value = '';
+    setChatStatus('');
+    setChatEmpty('Pro chat se přihlaste.');
+  }
 }
 
 
@@ -164,6 +195,7 @@ function setChatStatus(message) {
 
 function renderChatHistory() {
   if (!chatMessages) return;
+  chatHistory = chatHistory.slice(-CHAT_MAX_MESSAGES);
   if (!chatHistory.length) {
     setChatEmpty('Chat je připravený.');
     return;
@@ -186,9 +218,30 @@ function appendChat(role, text) {
 function focusChatInput() {
   if (!chatInput) return;
   setTimeout(() => {
+    if (!currentUser) return;
     chatInput.disabled = false;
     chatInput.focus();
   }, 0);
+}
+
+async function loadChatHistory() {
+  if (!currentUser) return;
+  try {
+    const data = await api('/api/chat/history');
+    const history = Array.isArray(data.messages) ? data.messages : [];
+    chatHistory = history.map((item) => ({
+      role: item.role === 'assistant' ? 'assistant' : 'user',
+      text: String(item.text || '')
+    })).slice(-CHAT_MAX_MESSAGES);
+    if (chatPanel && !chatPanel.classList.contains('hidden')) {
+      renderChatHistory();
+    }
+  } catch (err) {
+    chatHistory = [];
+    if (chatPanel && !chatPanel.classList.contains('hidden')) {
+      setChatEmpty(err.message || 'Historii chatu se nepodařilo načíst.');
+    }
+  }
 }
 
 
@@ -279,11 +332,18 @@ logoutBtn.addEventListener('click', async ()=>{
 closeAuth.addEventListener('click', ()=>{ closeAuthModal(); });
 
 if (chatToggle && chatPanel) {
-  chatToggle.addEventListener('click', () => {
+  chatToggle.addEventListener('click', async () => {
+    const authenticated = await refreshAuthState();
+    if (!authenticated) {
+      openAuth('login');
+      return;
+    }
     const opening = chatPanel.classList.contains('hidden');
     if (opening) {
       chatPanel.classList.remove('hidden');
       chatToggle.setAttribute('aria-expanded', 'true');
+      setChatStatus('Načítám historii…');
+      await loadChatHistory();
       renderChatHistory();
       setChatStatus('');
       focusChatInput();
@@ -310,12 +370,18 @@ if (chatForm && chatInput && chatMessages) {
   });
   chatForm.addEventListener('submit', async (e) => {
     e.preventDefault();
+    const authenticated = await refreshAuthState();
+    if (!authenticated) {
+      openAuth('login');
+      return;
+    }
     const message = chatInput.value.trim();
     if (!message || chatBusy) return;
     chatBusy = true;
     chatSend.disabled = true;
     chatInput.disabled = true;
     chatHistory.push({ role: 'user', text: message });
+    chatHistory = chatHistory.slice(-CHAT_MAX_MESSAGES);
     chatInput.value = '';
     renderChatHistory();
     setChatStatus('Načítám odpověď…');
@@ -329,6 +395,7 @@ if (chatForm && chatInput && chatMessages) {
         signal: controller.signal
       });
       chatHistory.push({ role: 'assistant', text: data.message || '...' });
+      chatHistory = chatHistory.slice(-CHAT_MAX_MESSAGES);
       renderChatHistory();
       setChatStatus('');
       focusChatInput();
@@ -337,6 +404,7 @@ if (chatForm && chatInput && chatMessages) {
         ? 'Chat momentálně neodpovídá. Zkuste to prosím znovu.'
         : err.message;
       chatHistory.push({ role: 'system', text: errorMessage });
+      chatHistory = chatHistory.slice(-CHAT_MAX_MESSAGES);
       renderChatHistory();
       setChatStatus('Chyba při odeslání.');
       focusChatInput();

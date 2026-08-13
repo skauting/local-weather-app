@@ -6,14 +6,19 @@ const path = require('path');
 const crypto = require('crypto');
 const multer = require('multer');
 const OpenAI = require('openai');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.OPENWEATHER_API_KEY;
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-pro';
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_PUBLISHABLE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY;
+const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY;
 const APP_VERSION = `1.0.0+${process.env.RENDER_GIT_COMMIT?.slice(0, 7) || process.env.GIT_COMMIT?.slice(0, 7) || process.env.BUILD_ID || 'local'}`;
 const CHAT_TIMEOUT_MS = 15000;
+const CHAT_MAX_MESSAGES = 10;
 const FREE_LIMIT = 5;
 const SESSION_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_ANONYMOUS_SESSIONS = Math.max(
@@ -25,6 +30,8 @@ const AUTH_COOKIE_TTL = 30 * 24 * 60 * 60;
 const STARTING_CREDITS = 5;
 const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
 const BIO_MAX_LENGTH = 500;
+const ACCESS_TOKEN_COOKIE = 'wa_at';
+const REFRESH_TOKEN_COOKIE = 'wa_rt';
 const AVATAR_MIME_TO_EXT = {
   'image/jpeg': 'jpg',
   'image/png': 'png',
@@ -46,9 +53,247 @@ const deepseekClient = DEEPSEEK_API_KEY
   ? new OpenAI({ apiKey: DEEPSEEK_API_KEY, baseURL: 'https://api.deepseek.com' })
   : null;
 
-function getAuthenticatedUser(req, res) {
+if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY || !SUPABASE_SECRET_KEY) {
+  console.warn('Varování: Supabase klíče nejsou plně nastavené. Přihlášení a chatová historie budou vypnuté.');
+}
+
+const supabaseAdmin = SUPABASE_URL && SUPABASE_SECRET_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SECRET_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
+    })
+  : null;
+
+function createAuthClient() {
+  if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) return null;
+  return createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
+  });
+}
+
+function publicUser(authUser, profile) {
+  const firstName = (profile?.first_name || authUser?.user_metadata?.first_name || '').toString().trim();
+  const lastName = (profile?.last_name || authUser?.user_metadata?.last_name || '').toString().trim();
+  const email = (profile?.email || authUser?.email || '').toString().trim().toLowerCase();
+  const computedRole = profile?.role === 'admin' || ADMIN_EMAILS.includes(email) ? 'admin' : 'user';
+  const profileCredits = Number.parseInt(profile?.credits, 10);
+
+  return {
+    id: authUser.id,
+    firstName,
+    lastName,
+    name: [firstName, lastName].filter(Boolean).join(' ') || email || 'Uživatel',
+    email,
+    phone: (profile?.phone || authUser?.user_metadata?.phone || '').toString().trim(),
+    countryCode: (profile?.country_code || authUser?.user_metadata?.country_code || '').toString().trim().toUpperCase(),
+    role: computedRole,
+    credits: Number.isFinite(profileCredits) ? profileCredits : STARTING_CREDITS,
+    isBlocked: Boolean(profile?.is_blocked),
+    avatarUrl: (profile?.avatar_url || '').toString().trim() || null,
+    bio: (profile?.bio || '').toString()
+  };
+}
+
+async function getProfile(user) {
+  const userId = typeof user === 'string' ? user : user?.id;
+  if (!supabaseAdmin || !isUuid(userId)) return null;
+  const { data, error } = await supabaseAdmin
+    .from('profiles')
+    .select('id, first_name, last_name, email, phone, country_code, role, credits, is_blocked, avatar_url, bio')
+    .eq('id', userId)
+    .maybeSingle();
+  if (error) {
+    console.error('Profile load error', error.message);
+    return null;
+  }
+  return data;
+}
+
+async function ensureAdminRole(user) {
+  if (!supabaseAdmin) return;
+  const email = (user?.email || '').toString().trim().toLowerCase();
+  if (!ADMIN_EMAILS.includes(email) || !isUuid(user?.id)) return;
+  const { error } = await supabaseAdmin
+    .from('profiles')
+    .update({ role: 'admin' })
+    .eq('id', user.id)
+    .neq('role', 'admin');
+  if (error) {
+    console.error('Admin role sync error', error.message);
+  }
+}
+
+function setAuthCookies(res, authSession) {
+  const accessToken = authSession?.access_token;
+  const refreshToken = authSession?.refresh_token;
+  if (!accessToken || !refreshToken) return;
+  appendCookie(res, serializeCookie(ACCESS_TOKEN_COOKIE, accessToken, AUTH_COOKIE_TTL));
+  appendCookie(res, serializeCookie(REFRESH_TOKEN_COOKIE, refreshToken, AUTH_COOKIE_TTL));
+}
+
+function clearAuthCookies(res) {
+  appendCookie(res, serializeCookie(ACCESS_TOKEN_COOKIE, '', 0));
+  appendCookie(res, serializeCookie(REFRESH_TOKEN_COOKIE, '', 0));
+}
+
+async function resolveUserFromTokens(req, res, accessToken, refreshToken) {
+  const auth = createAuthClient();
+  if (!auth || !accessToken) return null;
+
+  let currentAccessToken = accessToken;
+  let user = null;
+
+  const userResult = await auth.auth.getUser(currentAccessToken);
+  if (!userResult.error && userResult.data?.user) {
+    user = userResult.data.user;
+  }
+
+  if (!user && refreshToken) {
+    const refreshResult = await auth.auth.refreshSession({ refresh_token: refreshToken });
+    if (!refreshResult.error && refreshResult.data?.session) {
+      setAuthCookies(res, refreshResult.data.session);
+      currentAccessToken = refreshResult.data.session.access_token;
+      user = refreshResult.data.user || null;
+    }
+  }
+
+  if (!user) return null;
+
+  await ensureAdminRole(user);
+  const profile = await getProfile(user);
+  const normalizedUser = publicUser(user, profile);
   const session = getSession(req, res);
-  return session.user || null;
+  session.user = normalizedUser;
+  session.userAccessToken = currentAccessToken;
+  return normalizedUser;
+}
+
+async function getAuthenticatedUser(req, res) {
+  const session = getSession(req, res);
+  const cookies = parseCookies(req);
+  const accessToken = cookies[ACCESS_TOKEN_COOKIE];
+  const refreshToken = cookies[REFRESH_TOKEN_COOKIE];
+
+  if (!accessToken) {
+    session.user = null;
+    session.userAccessToken = null;
+    return null;
+  }
+
+  if (session.user && session.userAccessToken === accessToken) return session.user;
+
+  try {
+    const user = await resolveUserFromTokens(req, res, accessToken, refreshToken);
+    if (!user) {
+      clearAuthCookies(res);
+      session.user = null;
+      session.userAccessToken = null;
+    }
+    return user;
+  } catch (error) {
+    console.error('Auth resolve error', error.message || error);
+    clearAuthCookies(res);
+    session.user = null;
+    session.userAccessToken = null;
+    return null;
+  }
+}
+
+async function consumeUserCredit(userId) {
+  if (!supabaseAdmin || !isUuid(userId)) return -1;
+  const { data, error } = await supabaseAdmin.rpc('consume_credit', { p_user_id: userId });
+  if (error) {
+    console.error('Credit consume error', error.message);
+    return -1;
+  }
+  const remaining = Number.parseInt(data, 10);
+  return Number.isFinite(remaining) ? remaining : -1;
+}
+
+async function getActiveConversation(userId) {
+  if (!supabaseAdmin || !isUuid(userId)) return null;
+  const { data, error } = await supabaseAdmin
+    .from('chat_conversations')
+    .select('id, user_id, started_at, closed_at')
+    .eq('user_id', userId)
+    .is('closed_at', null)
+    .order('started_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.error('Active conversation load error', error.message);
+    return null;
+  }
+  return data || null;
+}
+
+async function createConversation(userId) {
+  const { data, error } = await supabaseAdmin
+    .from('chat_conversations')
+    .insert({ user_id: userId })
+    .select('id, user_id, started_at, closed_at')
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function getOrCreateActiveConversation(userId) {
+  const current = await getActiveConversation(userId);
+  if (current) return current;
+  return createConversation(userId);
+}
+
+async function closeConversation(conversationId) {
+  if (!supabaseAdmin || !isUuid(conversationId)) return;
+  const { error } = await supabaseAdmin
+    .from('chat_conversations')
+    .update({ closed_at: new Date().toISOString() })
+    .eq('id', conversationId)
+    .is('closed_at', null);
+  if (error) {
+    console.error('Conversation close error', error.message);
+  }
+}
+
+async function listConversationMessages(conversationId) {
+  if (!supabaseAdmin || !isUuid(conversationId)) return [];
+  const { data, error } = await supabaseAdmin
+    .from('chat_messages')
+    .select('role, content, created_at')
+    .eq('conversation_id', conversationId)
+    .order('created_at', { ascending: true });
+  if (error) {
+    console.error('Conversation messages load error', error.message);
+    return [];
+  }
+  return (data || []).map(item => ({
+    role: item.role,
+    text: item.content,
+    createdAt: item.created_at
+  }));
+}
+
+async function addConversationMessage({ userId, conversationId, role, content }) {
+  if (!supabaseAdmin) throw new Error('Supabase not configured');
+  const { error } = await supabaseAdmin.from('chat_messages').insert({
+    user_id: userId,
+    conversation_id: conversationId,
+    role,
+    content
+  });
+  if (error) throw error;
+}
+
+async function getConversationMessageCount(conversationId) {
+  if (!supabaseAdmin || !isUuid(conversationId)) return 0;
+  const { count, error } = await supabaseAdmin
+    .from('chat_messages')
+    .select('id', { count: 'exact', head: true })
+    .eq('conversation_id', conversationId);
+  if (error) {
+    console.error('Conversation count load error', error.message);
+    return 0;
+  }
+  return count || 0;
 }
 
 app.use(express.json());
@@ -249,9 +494,40 @@ function formatChatError(err) {
   };
 }
 
+app.get('/api/chat/history', async (req, res) => {
+  const user = await getAuthenticatedUser(req, res);
+  if (!user) {
+    return res.status(401).json({ error: 'Pro chat se musíte přihlásit.' });
+  }
+
+  if (!supabaseAdmin) {
+    return res.status(503).json({ error: 'Chatová historie není nakonfigurována.' });
+  }
+
+  const conversation = await getActiveConversation(user.id);
+  if (!conversation) {
+    return res.json({ messages: [], conversationId: null, maxMessages: CHAT_MAX_MESSAGES });
+  }
+
+  const messages = await listConversationMessages(conversation.id);
+  res.json({
+    messages,
+    conversationId: conversation.id,
+    maxMessages: CHAT_MAX_MESSAGES
+  });
+});
+
 app.post('/api/chat', async (req, res) => {
+  const user = await getAuthenticatedUser(req, res);
+  if (!user) {
+    return res.status(401).json({ error: 'Pro chat se musíte přihlásit.' });
+  }
+
   if (!deepseekClient) {
     return res.status(503).json({ error: 'Chat není nakonfigurován.' });
+  }
+  if (!supabaseAdmin) {
+    return res.status(503).json({ error: 'Chatová historie není nakonfigurována.' });
   }
 
   const message = (req.body?.message || '').toString().trim();
@@ -259,11 +535,27 @@ app.post('/api/chat', async (req, res) => {
   if (message.length > 4000) return res.status(400).json({ error: 'Zpráva je příliš dlouhá.' });
 
   try {
+    let conversation = await getOrCreateActiveConversation(user.id);
+    const messageCount = await getConversationMessageCount(conversation.id);
+    if (messageCount + 2 > CHAT_MAX_MESSAGES) {
+      await closeConversation(conversation.id);
+      conversation = await createConversation(user.id);
+    }
+
+    await addConversationMessage({
+      userId: user.id,
+      conversationId: conversation.id,
+      role: 'user',
+      content: message
+    });
+
+    const history = await listConversationMessages(conversation.id);
     const systemPrompt = [
-      'Jsi užitečný český asistent v aplikaci počasí.',
-      'Piš stručně, věcně a česky.',
-      'Pomáhej s počasím, aplikací a obecnými dotazy.',
-      'Odpovídej přirozeně a bezpečně.'
+      'Jsi český AI asistent zaměřený výhradně na počasí.',
+      'Odpovídej pouze na dotazy související s počasím, klimatem, předpovědí, teplotou, srážkami, větrem, kvalitou ovzduší a plánováním aktivit podle počasí.',
+      'Pokud je dotaz "co je dnes za den", odpověz stručně a hned se doptáš na lokalitu a nabídneš pomoc s počasím.',
+      'Na dotazy mimo počasí (například "jak se mám") neodpovídej věcně: krátce odmítni a okamžitě převeď konverzaci k počasí.',
+      'Piš česky, stručně a věcně.'
     ].join(' ');
 
     const completion = await Promise.race([
@@ -271,7 +563,10 @@ app.post('/api/chat', async (req, res) => {
         model: DEEPSEEK_MODEL,
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: message }
+          ...history.map((item) => ({
+            role: item.role === 'assistant' ? 'assistant' : 'user',
+            content: item.text
+          }))
         ],
         stream: false,
         temperature: 0.6
@@ -286,7 +581,18 @@ app.post('/api/chat', async (req, res) => {
     ]);
 
     const reply = completion.choices?.[0]?.message?.content?.trim() || 'Odpověď se nepodařilo vytvořit.';
-    res.json({ message: reply });
+    await addConversationMessage({
+      userId: user.id,
+      conversationId: conversation.id,
+      role: 'assistant',
+      content: reply
+    });
+
+    res.json({
+      message: reply,
+      conversationId: conversation.id,
+      maxMessages: CHAT_MAX_MESSAGES
+    });
   } catch (err) {
     console.error('Chat error', err.response?.data || err.message || err);
     const formatted = formatChatError(err);
@@ -398,6 +704,10 @@ app.post('/api/auth/register', authApiLimit, async (req, res) => {
   const user = data.session && data.user
     ? publicUser(data.user, await getProfile(data.user))
     : null;
+  if (user) {
+    anonymousSession.user = user;
+    anonymousSession.userAccessToken = data.session.access_token;
+  }
 
   res.status(201).json({
     ...usagePayload(anonymousSession, user),
@@ -410,14 +720,34 @@ app.post('/api/auth/register', authApiLimit, async (req, res) => {
 });
 
 app.post('/api/auth/login', authApiLimit, async (req, res) => {
+  if (!requireSupabase(res)) return;
+
+  const email = (req.body?.email || '').toString().trim().toLowerCase();
+  const password = (req.body?.password || '').toString();
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Zadejte e-mail a heslo.' });
+  }
+
+  const auth = createAuthClient();
+  const { data, error } = await auth.auth.signInWithPassword({ email, password });
+  if (error || !data?.session || !data?.user) {
+    return res.status(401).json({ error: 'Neplatný e-mail nebo heslo.' });
+  }
+
+  await ensureAdminRole(data.user);
+  setAuthCookies(res, data.session);
   const session = getSession(req, res);
-  session.user = { id: crypto.randomUUID(), name: 'Host', role: 'user', credits: STARTING_CREDITS };
+  session.count = 0;
+  session.user = publicUser(data.user, await getProfile(data.user));
+  session.userAccessToken = data.session.access_token;
   res.json(usagePayload(session, session.user));
 });
 
 app.post('/api/auth/logout', async (req, res) => {
   const session = getSession(req, res);
+  clearAuthCookies(res);
   session.user = null;
+  session.userAccessToken = null;
   res.json(usagePayload(session));
 });
 
