@@ -22,6 +22,8 @@ let selectedLon = null;
 let selectedName = null;
 let chatBusy = false;
 const CHAT_MAX_MESSAGES = 10;
+const CHAT_PROGRESS_NOTICE_MS = 15000;
+const CHAT_REQUEST_TIMEOUT_MS = 70000;
 
 // Auth / usage state mirrors the server session; the server stays authoritative.
 let freeUsage = 0;
@@ -423,7 +425,12 @@ if (chatForm && chatInput && chatMessages) {
     renderChatHistory();
     setChatStatus('Načítám odpověď…');
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    const timeoutId = setTimeout(() => controller.abort(), CHAT_REQUEST_TIMEOUT_MS);
+    const slowNoticeId = setTimeout(() => {
+      if (chatBusy) {
+        setChatStatus('Odpověď trvá déle než obvykle…');
+      }
+    }, CHAT_PROGRESS_NOTICE_MS);
     try {
       const data = await api('/api/chat', {
         method: 'POST',
@@ -468,6 +475,7 @@ if (chatForm && chatInput && chatMessages) {
       focusChatInput();
     } finally {
       clearTimeout(timeoutId);
+      clearTimeout(slowNoticeId);
       chatBusy = false;
       chatSend.disabled = false;
       chatInput.disabled = false;
