@@ -126,6 +126,7 @@ function fillForm(user) {
   document.getElementById('email').value = user.email || '';
   document.getElementById('phone').value = user.phone || '';
   document.getElementById('creditsCount').textContent = user.credits ?? 0;
+  document.getElementById('chatCreditsCount').textContent = user.chatCredits ?? 0;
   document.getElementById('rolePill').textContent = user.role || 'user';
   document.getElementById('rolePill').classList.toggle('role-admin', user.role === 'admin');
   bioInput.value = user.bio || '';

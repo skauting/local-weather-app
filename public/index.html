@@ -12,7 +12,8 @@
       <h1>Aktuální počasí</h1>
       <div class="right-area">
         <div id="usage" class="usage">Pokus: <span id="usageCount">0</span>/<span id="usageLimit">5</span></div>
-        <div id="creditsBadge" class="usage credits-badge hidden">Kredity: <span id="creditsCount">0</span></div>
+        <div id="creditsBadge" class="usage credits-badge hidden">Kredity počasí: <span id="creditsCount">0</span></div>
+        <div id="chatCreditsBadge" class="usage credits-badge hidden">Dotazy do chatu: <span id="chatCreditsCount">0</span></div>
         <button id="resetBtn" class="resetBtn" title="Resetovat počet pokusů">Resetovat</button>
         <a id="avatarLink" class="avatar-link hidden" href="/profile.html" title="Profil" aria-label="Otevřít profil">
           <span id="headerAvatar" class="header-avatar">?</span>
@@ -54,7 +55,6 @@
       <div id="chatPanel" class="chat-panel hidden">
         <div class="chat-header">
           <strong>AI chat</strong>
-          <span id="chatCounter" class="chat-counter">0/10</span>
           <span id="chatStatus" class="chat-status"></span>
           <button id="chatNew" class="chat-new" type="button">Nový chat</button>
           <button id="chatClose" class="chat-close" type="button" aria-label="Zavřít chat">×</button>
@@ -72,7 +72,7 @@
       <div class="modal-content">
         <button id="closeAuth" class="modal-close" type="button" aria-label="Zavřít">×</button>
         <div class="auth-forms">
-          <div id="authMessage" class="auth-message" role="status">Bez registrace můžete provést 5 dotazů. Po registraci získáte 5 kreditů na další hledání.</div>
+          <div id="authMessage" class="auth-message" role="status">Bez registrace můžete provést 5 dotazů. Po registraci získáte 5 kreditů na počasí a 3 dotazy do chatu.</div>
           <div id="authFormHost"></div>
         </div>
       </div>
