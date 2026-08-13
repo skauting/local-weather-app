@@ -376,9 +376,32 @@ const openRegister = document.getElementById('openRegister');
 const logoutBtn = document.getElementById('logoutBtn');
 const authModal = document.getElementById('authModal');
 const closeAuth = document.getElementById('closeAuth');
-const loginForm = document.getElementById('loginForm');
-const registerForm = document.getElementById('registerForm');
 const authMessage = document.getElementById('authMessage');
+const authFormHost = document.getElementById('authFormHost');
+const loginFormTemplate = document.getElementById('loginFormTemplate');
+const registerFormTemplate = document.getElementById('registerFormTemplate');
+
+function getLoginForm() {
+  return authFormHost.querySelector('#loginForm');
+}
+
+function getRegisterForm() {
+  return authFormHost.querySelector('#registerForm');
+}
+
+function hideAuthForms() {
+  authFormHost.replaceChildren();
+}
+
+function renderAuthForm(kind) {
+  const template = kind === 'register' ? registerFormTemplate : loginFormTemplate;
+  if (!template) return null;
+  const fragment = template.content.cloneNode(true);
+  authFormHost.replaceChildren(fragment);
+  const renderedForm = kind === 'register' ? getRegisterForm() : getLoginForm();
+  if (kind === 'register') populateCountries(renderedForm?.querySelector('#regCountry'));
+  return renderedForm;
+}
 
 menuBtn.addEventListener('click', ()=>{ const expanded = menuBtn.getAttribute('aria-expanded') === 'true'; menuBtn.setAttribute('aria-expanded', String(!expanded)); menuDrop.classList.toggle('hidden'); });
 openLogin.addEventListener('click', ()=>{ openAuth('login'); });
@@ -566,8 +589,7 @@ let lastFocusedBeforeModal = null;
 
 function closeAuthModal(){
   authModal.classList.add('hidden');
-  loginForm.classList.add('hidden');
-  registerForm.classList.add('hidden');
+  hideAuthForms();
   lastFocusedBeforeModal?.focus();
   lastFocusedBeforeModal = null;
 }
@@ -583,11 +605,10 @@ function openAuth(kind){
   authModal.classList.remove('hidden');
   menuDrop.classList.add('hidden');
   menuBtn.setAttribute('aria-expanded', 'false');
-  loginForm.classList.add('hidden'); registerForm.classList.add('hidden');
+  hideAuthForms();
   setAuthMessage('Bez registrace můžete provést 5 dotazů. Po registraci získáte 5 kreditů na další hledání.');
-  if (kind === 'login'){ loginForm.classList.remove('hidden'); }
-  else if (kind === 'register'){ registerForm.classList.remove('hidden'); }
-  authModal.querySelector('.auth-form:not(.hidden) input, .auth-form:not(.hidden) select')?.focus();
+  const visibleForm = renderAuthForm(kind);
+  visibleForm?.querySelector('input, select')?.focus();
 }
 
 authModal.addEventListener('click', (e)=>{ if (e.target === authModal) closeAuthModal(); });
@@ -608,29 +629,34 @@ authModal.addEventListener('keydown', (e)=>{
   else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
 });
 
-loginForm.addEventListener('submit', async (e)=>{
+authModal.addEventListener('submit', async (e)=>{
+  const submittedForm = e.target.closest('form');
+  if (!submittedForm) return;
   e.preventDefault();
-  const email = document.getElementById('loginEmail').value.trim();
-  const password = document.getElementById('loginPassword').value;
-  const submit = document.getElementById('doLogin');
-  submit.disabled = true;
-  setAuthMessage('Přihlašuji…');
-  try {
-    applyUsage(await api('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password })
-    }));
-    closeAuthModal();
-  } catch (err) {
-    setAuthMessage(err.message, 'error');
-  } finally {
-    submit.disabled = false;
-  }
-});
 
-registerForm.addEventListener('submit', async (e)=>{
-  e.preventDefault();
+  if (submittedForm.id === 'loginForm') {
+    const email = document.getElementById('loginEmail').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    const submit = document.getElementById('doLogin');
+    submit.disabled = true;
+    setAuthMessage('Přihlašuji…');
+    try {
+      applyUsage(await api('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      }));
+      closeAuthModal();
+    } catch (err) {
+      setAuthMessage(err.message, 'error');
+    } finally {
+      submit.disabled = false;
+    }
+    return;
+  }
+
+  if (submittedForm.id !== 'registerForm') return;
+
   const payload = {
     firstName: document.getElementById('regFirstName').value.trim(),
     lastName: document.getElementById('regLastName').value.trim(),
@@ -649,12 +675,13 @@ registerForm.addEventListener('submit', async (e)=>{
       body: JSON.stringify(payload)
     });
     applyUsage(response);
-    registerForm.reset();
+    getRegisterForm()?.reset();
     if (response.confirmationRequired) {
-      registerForm.classList.add('hidden');
-      loginForm.classList.remove('hidden');
+      const loginForm = renderAuthForm('login');
       setAuthMessage(response.message, 'success');
-      document.getElementById('loginEmail').value = payload.email;
+      const loginEmail = loginForm?.querySelector('#loginEmail');
+      if (loginEmail) loginEmail.value = payload.email;
+      loginForm?.querySelector('input, select')?.focus();
     } else {
       closeAuthModal();
     }
@@ -665,8 +692,9 @@ registerForm.addEventListener('submit', async (e)=>{
   }
 });
 
-function populateCountries() {
-  const select = document.getElementById('regCountry');
+function populateCountries(select = document.getElementById('regCountry')) {
+  if (!select) return;
+  select.innerHTML = '<option value="">Vyberte zemi</option>';
   const options = getCountryList();
   const codes = options.map(item => item.code);
 
@@ -685,7 +713,6 @@ function populateCountries() {
 }
 
 // initialize UI
-populateCountries();
 updateUsageUI(); updateMenuUI(); loadUsage();
 loadAppVersion();
 
