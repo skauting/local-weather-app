@@ -70,8 +70,11 @@ const MAX_ANONYMOUS_SESSIONS = Math.max(
 const MAX_RATE_LIMIT_KEYS = 10000;
 const AUTH_COOKIE_TTL = 30 * 24 * 60 * 60;
 const STARTING_CREDITS = 5;
+const STARTING_CHAT_CREDITS = 3;
 const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
 const BIO_MAX_LENGTH = 500;
+const CHAT_LIMIT_EXHAUSTED_MESSAGE = 'Vyčerpali jste limit dotazů do chatu.';
+const PROFILE_SELECT_FIELDS = 'id, first_name, last_name, email, phone, country_code, role, credits, chat_credits, is_blocked, avatar_url, bio';
 const ACCESS_TOKEN_COOKIE = 'wa_at';
 const REFRESH_TOKEN_COOKIE = 'wa_rt';
 const AVATAR_MIME_TO_EXT = {
@@ -118,6 +121,7 @@ function publicUser(authUser, profile) {
   const email = (profile?.email || authUser?.email || '').toString().trim().toLowerCase();
   const computedRole = profile?.role === 'admin' || ADMIN_EMAILS.includes(email) ? 'admin' : 'user';
   const profileCredits = Number.parseInt(profile?.credits, 10);
+  const profileChatCredits = Number.parseInt(profile?.chat_credits, 10);
 
   return {
     id: authUser.id,
@@ -129,6 +133,7 @@ function publicUser(authUser, profile) {
     countryCode: (profile?.country_code || authUser?.user_metadata?.country_code || '').toString().trim().toUpperCase(),
     role: computedRole,
     credits: Number.isFinite(profileCredits) ? profileCredits : STARTING_CREDITS,
+    chatCredits: Number.isFinite(profileChatCredits) ? profileChatCredits : STARTING_CHAT_CREDITS,
     isBlocked: Boolean(profile?.is_blocked),
     avatarUrl: (profile?.avatar_url || '').toString().trim() || null,
     bio: (profile?.bio || '').toString()
@@ -140,7 +145,7 @@ async function getProfile(user) {
   if (!supabaseAdmin || !isUuid(userId)) return null;
   const { data, error } = await supabaseAdmin
     .from('profiles')
-    .select('id, first_name, last_name, email, phone, country_code, role, credits, is_blocked, avatar_url, bio')
+    .select(PROFILE_SELECT_FIELDS)
     .eq('id', userId)
     .maybeSingle();
   if (error) {
@@ -257,6 +262,17 @@ async function consumeUserCredit(userId) {
   return Number.isFinite(remaining) ? remaining : -1;
 }
 
+async function consumeUserChatCredit(userId) {
+  if (!supabaseAdmin || !isUuid(userId)) return -1;
+  const { data, error } = await supabaseAdmin.rpc('consume_chat_credit', { p_user_id: userId });
+  if (error) {
+    console.error('Chat credit consume error', error.message);
+    return -1;
+  }
+  const remaining = Number.parseInt(data, 10);
+  return Number.isFinite(remaining) ? remaining : -1;
+}
+
 async function getLatestConversation(userId) {
   if (!supabaseAdmin || !isUuid(userId)) return null;
   const { data, error } = await supabaseAdmin
@@ -334,14 +350,15 @@ async function listRecentConversationMessages(conversationId, limit) {
   }));
 }
 
-async function addConversationMessage({ userId, conversationId, role, content }) {
+async function addConversationMessages(entries) {
   if (!supabaseAdmin) throw new Error('Supabase not configured');
-  const { error } = await supabaseAdmin.from('chat_messages').insert({
-    user_id: userId,
-    conversation_id: conversationId,
-    role,
-    content
-  });
+  const payload = (Array.isArray(entries) ? entries : [entries]).map((entry) => ({
+    user_id: entry.userId,
+    conversation_id: entry.conversationId,
+    role: entry.role,
+    content: entry.content
+  }));
+  const { error } = await supabaseAdmin.from('chat_messages').insert(payload);
   if (error) throw error;
 }
 
@@ -437,6 +454,7 @@ function serializeProfile(user) {
     countryCode: user.country_code,
     role: user.role,
     credits: user.credits,
+    chatCredits: user.chat_credits,
     isBlocked: Boolean(user.is_blocked),
     avatarUrl: user.avatar_url || null,
     bio: user.bio || '',
@@ -622,6 +640,7 @@ function usagePayload(session, user = null) {
     limit: FREE_LIMIT,
     remaining: user ? null : Math.max(0, FREE_LIMIT - session.count),
     credits: user ? user.credits : null,
+    chatCredits: user ? user.chatCredits : null,
     user
   };
 }
@@ -1578,7 +1597,8 @@ app.get('/api/chat/history', async (req, res) => {
       messages: [],
       messageCount: 0,
       conversationId: null,
-      maxMessages: CHAT_MAX_MESSAGES
+      maxMessages: CHAT_MAX_MESSAGES,
+      usage: usagePayload(getSession(req, res), user)
     });
   }
 
@@ -1587,7 +1607,8 @@ app.get('/api/chat/history', async (req, res) => {
     messages,
     messageCount: getVisibleConversationMessageCount(messages.length),
     conversationId: conversation.id,
-    maxMessages: CHAT_MAX_MESSAGES
+    maxMessages: CHAT_MAX_MESSAGES,
+    usage: usagePayload(getSession(req, res), user)
   });
 });
 
@@ -1613,7 +1634,8 @@ app.post('/api/chat/new', async (req, res) => {
       messageCount: 0,
       rotated: true,
       conversationId: nextConversation.id,
-      maxMessages: CHAT_MAX_MESSAGES
+      maxMessages: CHAT_MAX_MESSAGES,
+      usage: usagePayload(getSession(req, res), user)
     });
   } catch (err) {
     console.error('Chat reset error', err.message || err);
@@ -1640,6 +1662,13 @@ app.post('/api/chat', async (req, res) => {
   const message = (req.body?.message || '').toString().trim();
   if (!message) return res.status(400).json({ error: 'Zadejte zprávu.' });
   if (message.length > 4000) return res.status(400).json({ error: 'Zpráva je příliš dlouhá.' });
+  if (user.chatCredits < 1) {
+    return res.status(402).json({
+      error: CHAT_LIMIT_EXHAUSTED_MESSAGE,
+      code: 'CHAT_LIMIT_REACHED',
+      usage: usagePayload(getSession(req, res), user)
+    });
+  }
 
   try {
     let rotated = false;
@@ -1660,15 +1689,13 @@ app.post('/api/chat', async (req, res) => {
       conversation = await createConversation(user.id);
     }
 
-    await addConversationMessage({
-      userId: user.id,
-      conversationId: conversation.id,
+    const history = await listRecentConversationMessages(conversation.id, Math.max(CHAT_MAX_MESSAGES - 1, 1));
+    const requestHistory = [...history, {
       role: 'user',
-      content: message
-    });
-
-    const history = await listRecentConversationMessages(conversation.id, CHAT_MAX_MESSAGES);
-    const latestUserMessage = history.filter(item => item.role === 'user').at(-1)?.text || message;
+      text: message,
+      createdAt: new Date().toISOString()
+    }];
+    const latestUserMessage = requestHistory.filter(item => item.role === 'user').at(-1)?.text || message;
     let reply;
 
     if (isDateOnlyQuestion(latestUserMessage)) {
@@ -1680,7 +1707,7 @@ app.post('/api/chat', async (req, res) => {
       });
       reply = `Dnes je ${today}. Napiš mi město a řeknu ti počasí nebo předpověď.`;
     } else {
-      const intent = await inferWeatherChatIntent(history);
+      const intent = await inferWeatherChatIntent(requestHistory);
 
       if (!intent.weatherRelevant) {
         reply = 'Pomůžu jen s počasím. Napiš prosím město a co tě zajímá, třeba „Bude zítra v Brně pršet?“';
@@ -1689,7 +1716,7 @@ app.post('/api/chat', async (req, res) => {
       } else {
         try {
           const { bundles, missingCities } = await fetchWeatherChatBundles(intent);
-          reply = await answerWeatherQuestionWithData(history, intent, bundles);
+          reply = await answerWeatherQuestionWithData(requestHistory, intent, bundles);
           if (missingCities.length) {
             const missingLabel = formatQuotedCityList(missingCities);
             const prefix = missingCities.length === 1
@@ -1713,12 +1740,35 @@ app.post('/api/chat', async (req, res) => {
       }
     }
 
-    await addConversationMessage({
-      userId: user.id,
-      conversationId: conversation.id,
-      role: 'assistant',
-      content: reply
-    });
+    const remainingChatCredits = await consumeUserChatCredit(user.id);
+    if (remainingChatCredits < 0) {
+      const exhaustedUser = { ...user, chatCredits: 0 };
+      const session = getSession(req, res);
+      session.user = exhaustedUser;
+      return res.status(402).json({
+        error: CHAT_LIMIT_EXHAUSTED_MESSAGE,
+        code: 'CHAT_LIMIT_REACHED',
+        usage: usagePayload(session, exhaustedUser)
+      });
+    }
+
+    await addConversationMessages([
+      {
+        userId: user.id,
+        conversationId: conversation.id,
+        role: 'user',
+        content: message
+      },
+      {
+        userId: user.id,
+        conversationId: conversation.id,
+        role: 'assistant',
+        content: reply
+      }
+    ]);
+    const nextUser = { ...user, chatCredits: remainingChatCredits };
+    const session = getSession(req, res);
+    session.user = nextUser;
     const messages = await listConversationMessages(conversation.id);
     const messageCount = await getConversationMessageCount(conversation.id);
 
@@ -1728,7 +1778,8 @@ app.post('/api/chat', async (req, res) => {
       messageCount: getVisibleConversationMessageCount(messageCount),
       rotated,
       conversationId: conversation.id,
-      maxMessages: CHAT_MAX_MESSAGES
+      maxMessages: CHAT_MAX_MESSAGES,
+      usage: usagePayload(session, nextUser)
     });
   } catch (err) {
     console.error('Chat error', err.response?.data || err.message || err);
@@ -1952,7 +2003,7 @@ app.patch('/api/profile', profileApiLimit, async (req, res) => {
       bio: input.bio
     })
     .eq('id', user.id)
-    .select('id, first_name, last_name, email, phone, country_code, role, credits, is_blocked, avatar_url, bio')
+    .select(PROFILE_SELECT_FIELDS)
     .single();
 
   if (error) {
@@ -2008,7 +2059,7 @@ app.post('/api/profile/avatar', profileApiLimit, (req, res) => {
       .from('profiles')
       .update({ avatar_url: publicUrl })
       .eq('id', user.id)
-      .select('id, first_name, last_name, email, phone, country_code, role, credits, is_blocked, avatar_url, bio')
+      .select(PROFILE_SELECT_FIELDS)
       .single();
 
     if (error) {
@@ -2037,7 +2088,7 @@ app.get('/api/admin/users', adminApiLimit, async (req, res) => {
 
   const { data, error } = await supabaseAdmin
     .from('profiles')
-    .select('id, first_name, last_name, email, phone, country_code, role, credits, is_blocked, avatar_url, bio, created_at')
+    .select(`${PROFILE_SELECT_FIELDS}, created_at`)
     .order('created_at', { ascending: true });
 
   if (error) {
@@ -2130,6 +2181,45 @@ app.post('/api/admin/users/:userId/credits', adminApiLimit, async (req, res) => 
   res.json({
     credits: Number.parseInt(data, 10) || 0,
     message: `Kredity byly navýšeny o ${amount}.`
+  });
+});
+
+app.post('/api/admin/users/:userId/chat-credits', adminApiLimit, async (req, res) => {
+  if (!ensureSupabaseAdmin(res, 'Administrace není nakonfigurována.')) return;
+  const adminUser = await requireAdminUserOrFail(req, res);
+  if (!adminUser) return;
+
+  const targetUserId = (req.params.userId || '').toString().trim();
+  const amount = Number.parseInt(req.body?.amount, 10);
+  if (!isUuid(targetUserId)) {
+    return res.status(400).json({ error: 'Neplatné ID uživatele.' });
+  }
+  if (!Number.isFinite(amount) || amount < 1 || amount > 100000) {
+    return res.status(400).json({ error: 'Zadejte počet chat kreditů od 1 do 100000.' });
+  }
+
+  const { data, error } = await supabaseAdmin.rpc('add_chat_credits', {
+    p_user_id: targetUserId,
+    p_amount: amount
+  });
+
+  if (error) {
+    console.error('Admin add chat credits error', error.message);
+    return res.status(400).json({ error: 'Chat kredity se nepodařilo navýšit.' });
+  }
+
+  if (targetUserId === adminUser.id) {
+    const profile = await getProfile(adminUser.id);
+    if (profile) {
+      const session = getSession(req, res);
+      session.user = publicUser({ id: adminUser.id, email: adminUser.email }, profile);
+      session.userAccessToken = parseCookies(req)[ACCESS_TOKEN_COOKIE] || session.userAccessToken || null;
+    }
+  }
+
+  res.json({
+    chatCredits: Number.parseInt(data, 10) || 0,
+    message: `Chat kredity byly navýšeny o ${amount}.`
   });
 });
 

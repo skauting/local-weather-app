@@ -61,7 +61,7 @@ function clearFeedback() {
 function renderUsers(users) {
   usersBody.innerHTML = '';
   if (!users.length) {
-    usersBody.innerHTML = '<tr><td colspan="6" class="meta">Zatím nejsou žádní registrovaní uživatelé.</td></tr>';
+    usersBody.innerHTML = '<tr><td colspan="8" class="meta">Zatím nejsou žádní registrovaní uživatelé.</td></tr>';
     return;
   }
 
@@ -74,14 +74,21 @@ function renderUsers(users) {
       <td>${escapeHtml(user.firstName)} ${escapeHtml(user.lastName)}</td>
       <td>${escapeHtml(user.email)}</td>
       <td><strong class="credits-cell">${escapeHtml(user.credits)}</strong></td>
+      <td><strong class="credits-cell">${escapeHtml(user.chatCredits)}</strong></td>
       <td>
         <span class="status-pill ${blocked ? 'status-blocked' : 'status-active'}">
           ${blocked ? 'Zablokovaný' : 'Aktivní'}
         </span>
       </td>
       <td>
-        <form class="topup-form" data-user-id="${escapeHtml(user.id)}">
-          <input type="number" name="amount" min="1" max="100000" value="5" required aria-label="Počet kreditů" />
+        <form class="topup-form" data-user-id="${escapeHtml(user.id)}" data-credit-kind="weather">
+          <input type="number" name="amount" min="1" max="100000" value="5" required aria-label="Počet kreditů počasí" />
+          <button type="submit">Dobít</button>
+        </form>
+      </td>
+      <td>
+        <form class="topup-form" data-user-id="${escapeHtml(user.id)}" data-credit-kind="chat">
+          <input type="number" name="amount" min="1" max="100000" value="3" required aria-label="Počet chat kreditů" />
           <button type="submit">Dobít</button>
         </form>
       </td>
@@ -165,17 +172,21 @@ usersBody.addEventListener('submit', async (e) => {
   if (!form) return;
   e.preventDefault();
   const userId = form.dataset.userId;
+  const creditKind = form.dataset.creditKind === 'chat' ? 'chat' : 'weather';
   const amount = Number.parseInt(new FormData(form).get('amount'), 10);
   const button = form.querySelector('button');
   button.disabled = true;
   clearFeedback();
   try {
-    const result = await api(`/api/admin/users/${encodeURIComponent(userId)}/credits`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amount })
-    });
-    showMessage(result.message || 'Kredity byly dobity.');
+    const result = await api(
+      `/api/admin/users/${encodeURIComponent(userId)}/${creditKind === 'chat' ? 'chat-credits' : 'credits'}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount })
+      }
+    );
+    showMessage(result.message || (creditKind === 'chat' ? 'Chat kredity byly navýšeny.' : 'Kredity byly dobity.'));
     await refreshData(false);
   } catch (err) {
     showError(err.message);
