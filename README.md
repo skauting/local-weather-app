@@ -1,46 +1,80 @@
-Instrukce k spuštení lokální aplikace pocasí
+Instrukce k spuï¿½tenï¿½ lokï¿½lnï¿½ aplikace pocasï¿½
 
-1) Nainstalovat závislosti
+1) Nainstalovat zï¿½vislosti
    npm install
 
-2) Zkopírovat `.env.example` jako `.env` a doplnit:
-   - OpenWeather API klíc
+2) Zkopï¿½rovat `.env.example` jako `.env` a doplnit:
+   - OpenWeather API klï¿½c
    - Supabase URL
    - Supabase publishable key
    - Supabase secret key
-   - DeepSeek API klíc
-   - ADMIN_EMAILS (cárkou oddelené e-maily, které se po prihlášení stanou adminy)
+   - DeepSeek API klï¿½c
+   - ADMIN_EMAILS (cï¿½rkou oddelenï¿½ e-maily, kterï¿½ se po prihlï¿½enï¿½ stanou adminy)
 
-   Soubor `.env` je v `.gitignore` a nesmí se commitovat.
+   Soubor `.env` je v `.gitignore` a nesmï¿½ se commitovat.
 
 3) Spustit server
-   - lokálne (firemní TLS / systémové CA): `npm run start:local`
-   - bežne / na hostingu: `npm start`
+   - lokï¿½lne (firemnï¿½ TLS / systï¿½movï¿½ CA): `npm run start:local`
+   - beï¿½ne / na hostingu: `npm start`
 
-4) Otevrít v prohlížeci
+4) Otevrï¿½t v prohlï¿½eci
    http://localhost:3000
+
+## Doporucenï¿½ workflow: main vs. worktree
+
+Pro jasnï¿½ oddelenï¿½ behu aplikace pouï¿½ï¿½vej:
+
+- **main checkout** na portu `3000`
+- **worktree** na portu `3001`
+
+Prakticky:
+
+1. V hlavnï¿½m checkoutu spust:
+   - `npm run start:main`
+   - nebo `npm run dev:main`
+2. Ve worktree spust:
+   - `npm run start:worktree`
+   - nebo `npm run dev:worktree`
+
+Dï¿½leï¿½itï¿½: server vï¿½dy servï¿½ruje soubory z adresï¿½re, ze kterï¿½ho ho spustï¿½. Stejnï¿½ skript tedy spusï¿½:
+
+- v `.../local-weather-app` pro hlavnï¿½ verzi
+- v `.../copilot-worktrees/local-weather-app/<nazev-worktree>` pro worktree verzi
+
+Pokud testujeï¿½ registraci nebo potvrzovacï¿½ e-maily i na worktree portu `3001`, pridat tuto URL takï¿½ do Supabase **Redirect URLs**.
+
+### Bash skripty v rootu repozitï¿½re
+
+Pro pohodlnï¿½ spouï¿½tenï¿½ z rootu repozitï¿½re jsou k dispozici:
+
+- `./run-main.sh` - spustï¿½ hlavnï¿½ checkout na portu `3000` v restartovacï¿½m reï¿½imu
+- `./run-worktree.sh` - spustï¿½ worktree na portu `3001` v restartovacï¿½m reï¿½imu
+
+Pokud existuje vï¿½ce worktrees, `./run-worktree.sh` nabï¿½dne vï¿½ber. Prï¿½padne lze zadat cast nï¿½zvu worktree:
+
+- `./run-worktree.sh scaling-winner`
 
 ## Deploy na Render
 
-Repozitár obsahuje Blueprint [`render.yaml`](render.yaml).
+Repozitï¿½r obsahuje Blueprint [`render.yaml`](render.yaml).
 
 1. Na [Render](https://dashboard.render.com) vytvor **Blueprint** z tohoto GitHub repa (nebo Web Service podle `render.yaml`).
-2. Dopln Environment Variables (hodnoty ze svého `.env`):
+2. Dopln Environment Variables (hodnoty ze svï¿½ho `.env`):
    - `OPENWEATHER_API_KEY`
    - `SUPABASE_URL`
    - `SUPABASE_PUBLISHABLE_KEY`
    - `SUPABASE_SECRET_KEY`
    - `ADMIN_EMAILS`
-   - `APP_ORIGIN` = finální URL služby, napr. `https://local-weather-app.onrender.com`
+   - `APP_ORIGIN` = finï¿½lnï¿½ URL sluï¿½by, napr. `https://local-weather-app.onrender.com`
    - `DEEPSEEK_API_KEY`
    - `DEEPSEEK_MODEL` = `deepseek-v4-pro`
 3. V Supabase ? Authentication ? URL Configuration nastav:
    - **Site URL** = Render URL
-   - **Redirect URLs** = stejná URL (prípadne s `/**`)
+   - **Redirect URLs** = stejnï¿½ URL (prï¿½padne s `/**`)
 
-Poznámky:
-- Hesla zpracovává Supabase Auth a nikdy se neukládají do tabulky `profiles`.
-- Osobní údaje jsou v `public.profiles`, chránené Row Level Security.
-- Schéma databáze je v `supabase/migrations`.
-- Endpoint serveru volá OpenWeather (current weather) a vrací jen potrebná pole pro UI.
-- Free plan na Renderu po necinnosti usíná; první request po spánku muže trvat déle.
+Poznï¿½mky:
+- Hesla zpracovï¿½vï¿½ Supabase Auth a nikdy se neuklï¿½dajï¿½ do tabulky `profiles`.
+- Osobnï¿½ ï¿½daje jsou v `public.profiles`, chrï¿½nenï¿½ Row Level Security.
+- Schï¿½ma databï¿½ze je v `supabase/migrations`.
+- Endpoint serveru volï¿½ OpenWeather (current weather) a vracï¿½ jen potrebnï¿½ pole pro UI.
+- Free plan na Renderu po necinnosti usï¿½nï¿½; prvnï¿½ request po spï¿½nku muï¿½e trvat dï¿½le.

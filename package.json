@@ -9,7 +9,11 @@
   "scripts": {
     "start": "node server.js",
     "start:local": "node --use-system-ca server.js",
-    "dev": "nodemon --exec \"node --use-system-ca\" server.js"
+    "dev": "nodemon --exec \"node --use-system-ca\" server.js",
+    "start:main": "PORT=3000 node --use-system-ca server.js",
+    "dev:main": "PORT=3000 nodemon --exec \"node --use-system-ca\" server.js",
+    "start:worktree": "PORT=3001 node --use-system-ca server.js",
+    "dev:worktree": "PORT=3001 nodemon --exec \"node --use-system-ca\" server.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.1",
