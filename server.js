@@ -668,6 +668,29 @@ function registrationErrorMessage(error) {
   return 'Registraci se nepodařilo dokončit. Zkuste to prosím znovu.';
 }
 
+function loginErrorPayload(error) {
+  const message = (error?.message || '').toString();
+  if (/email not confirmed|not confirmed/i.test(message)) {
+    return {
+      status: 403,
+      error: 'E-mail ještě není potvrzený. Otevřete potvrzovací odkaz a pak se přihlaste.'
+    };
+  }
+  if (/too many requests|rate limit/i.test(message)) {
+    return {
+      status: 429,
+      error: 'Příliš mnoho pokusů o přihlášení. Zkuste to prosím později.'
+    };
+  }
+  if (/invalid login credentials|invalid.*email|invalid.*password|user not found/i.test(message)) {
+    return { status: 401, error: 'Neplatný e-mail nebo heslo.' };
+  }
+  return {
+    status: 401,
+    error: 'Přihlášení se nepodařilo. Zkuste to prosím znovu.'
+  };
+}
+
 app.post('/api/auth/register', authApiLimit, async (req, res) => {
   if (!requireSupabase(res)) return;
   const input = validateRegistration(req.body);
@@ -730,8 +753,12 @@ app.post('/api/auth/login', authApiLimit, async (req, res) => {
 
   const auth = createAuthClient();
   const { data, error } = await auth.auth.signInWithPassword({ email, password });
-  if (error || !data?.session || !data?.user) {
-    return res.status(401).json({ error: 'Neplatný e-mail nebo heslo.' });
+  if (error) {
+    const payload = loginErrorPayload(error);
+    return res.status(payload.status).json({ error: payload.error });
+  }
+  if (!data?.session || !data?.user) {
+    return res.status(401).json({ error: 'Přihlášení se nepodařilo. Zkuste to prosím znovu.' });
   }
 
   await ensureAdminRole(data.user);

@@ -164,8 +164,10 @@ function updateChatAvailability() {
   const enabled = Boolean(currentUser);
   chatToggle.classList.toggle('hidden', !enabled);
   chatToggle.disabled = !enabled;
-  chatPanel.classList.add('hidden');
-  chatToggle.setAttribute('aria-expanded', 'false');
+  if (!enabled) {
+    chatPanel.classList.add('hidden');
+    chatToggle.setAttribute('aria-expanded', 'false');
+  }
   if (chatInput) chatInput.disabled = !enabled || chatBusy;
   if (chatSend) chatSend.disabled = !enabled || chatBusy;
   if (!enabled) {
