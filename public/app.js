@@ -25,6 +25,10 @@ let chatBusy = false;
 const CHAT_MAX_MESSAGES = 10;
 const CHAT_PROGRESS_NOTICE_MS = 15000;
 const CHAT_REQUEST_TIMEOUT_MS = 70000;
+const RAW_TOGGLE_SHOW_TEXT = 'Zobrazit surová data';
+const RAW_TOGGLE_HIDE_TEXT = 'Skrýt surová data';
+const WEATHER_LOADING_TEXT = 'Načítám…';
+const UNKNOWN_ERROR_TEXT = 'Neznámá chyba';
 
 // Auth / usage state mirrors the server session; the server stays authoritative.
 let freeUsage = 0;
@@ -213,6 +217,30 @@ function setChatCounter(count = 0, max = CHAT_MAX_MESSAGES) {
   chatCounter.textContent = `${safeCount}/${safeMax}`;
 }
 
+function resetRawOutput() {
+  if (rawEl) {
+    rawEl.classList.add('hidden');
+    rawEl.textContent = '';
+  }
+  if (toggleRaw) toggleRaw.textContent = RAW_TOGGLE_SHOW_TEXT;
+}
+
+function renderLoadingState(message = WEATHER_LOADING_TEXT) {
+  if (!resultEl) return;
+  const loading = document.createElement('div');
+  loading.className = 'loading';
+  loading.textContent = message;
+  resultEl.replaceChildren(loading);
+  resultEl.classList.remove('hidden');
+}
+
+function showWeatherError(message) {
+  if (!errorEl) return;
+  resultEl.classList.add('hidden');
+  errorEl.textContent = message || UNKNOWN_ERROR_TEXT;
+  errorEl.classList.remove('hidden');
+}
+
 function renderChatHistory() {
   if (!chatMessages) return;
   if (!chatHistory.length) {
@@ -289,7 +317,7 @@ async function fetchSuggest(q) {
   suggestController = controller;
   try {
     const res = await fetch(`/api/suggest?q=${encodeURIComponent(q)}`, { signal: controller.signal });
-    if (!res.ok) throw new Error('Na�ept�v�n� nen� moment�lne dostupn�.');
+    if (!res.ok) throw new Error('Našeptávání není momentálně dostupné.');
     const list = await res.json();
     // dedupe by display (case-insensitive) keeping first (server already scores)
     const map = new Map();
@@ -613,7 +641,7 @@ registerForm.addEventListener('submit', async (e)=>{
   };
   const submit = document.getElementById('doRegister');
   submit.disabled = true;
-  setAuthMessage('Vytv�r�m �cet�');
+  setAuthMessage('Vytvářím účet…');
   try {
     const response = await api('/api/auth/register', {
       method: 'POST',
@@ -679,9 +707,8 @@ form.addEventListener('submit', async (e) => {
   if (!city) return;
 
   errorEl.classList.add('hidden');
-  rawEl.classList.add('hidden');
-  resultEl.innerHTML = '<div class="loading">Nac�t�m�</div>';
-  resultEl.classList.remove('hidden');
+  resetRawOutput();
+  renderLoadingState();
 
   try {
     let url;
@@ -709,12 +736,10 @@ form.addEventListener('submit', async (e) => {
       return;
     }
     if (err.data?.code === 'INSUFFICIENT_CREDITS') {
-      errorEl.textContent = err.message;
-      errorEl.classList.remove('hidden');
+      showWeatherError(err.message);
       return;
     }
-    errorEl.textContent = err.message || 'Nezn�m� chyba';
-    errorEl.classList.remove('hidden');
+    showWeatherError(err.message || UNKNOWN_ERROR_TEXT);
   }
 });
 
@@ -754,7 +779,7 @@ document.addEventListener('click', (e)=>{
 });
 
 // Shifting the UNIX timestamp by the location's offset only gives the right
-// wall-clock time if it is then formatted in UTC � otherwise the browser
+// wall-clock time if it is then formatted in UTC - otherwise the browser
 // timezone gets applied on top of it.
 function localDate(dt, tzOffset) {
   return new Date((dt + (tzOffset || 0)) * 1000);
@@ -800,12 +825,12 @@ function render(resp) {
   // details
   const detailsHtml = `
     <div class="details">
-      <div>Stav oblacnosti: ${cur.clouds?.all ?? '-'}%</div>
+    <div>Stav oblačnosti: ${cur.clouds?.all ?? '-'}%</div>
       <div>Tlak: ${cur.main?.pressure ?? '-'} hPa</div>
       <div>Viditelnost: ${cur.visibility != null ? cur.visibility + ' m' : '-'}</div>
       <div>Rosný bod: ${cur.main?.dew_point != null ? Math.round(cur.main.dew_point) + '°C' : '-'}</div>
-      <div>Sunrise: ${fmtTime(cur.sys?.sunrise, tzOffset)}</div>
-      <div>Sunset: ${fmtTime(cur.sys?.sunset, tzOffset)}</div>
+    <div>Východ slunce: ${fmtTime(cur.sys?.sunrise, tzOffset)}</div>
+    <div>Západ slunce: ${fmtTime(cur.sys?.sunset, tzOffset)}</div>
     </div>
   `;
 
@@ -846,7 +871,7 @@ function render(resp) {
   const airSection = (() => {
     if (!air || !air.list || !air.list.length) return '';
     const a = air.list[0];
-    const aqiMap = {1: 'Good', 2: 'Fair', 3: 'Moderate', 4: 'Poor', 5: 'Very Poor'};
+    const aqiMap = {1: 'Dobrá', 2: 'Uspokojivá', 3: 'Střední', 4: 'Špatná', 5: 'Velmi špatná'};
     const aqi = a.main?.aqi;
     const comp = a.components || {};
     return `
@@ -873,9 +898,9 @@ toggleRaw.addEventListener('click', () => {
   if (rawEl.classList.contains('hidden')) {
     rawEl.textContent = JSON.stringify(latestRaw, null, 2);
     rawEl.classList.remove('hidden');
-    toggleRaw.textContent = 'Skr�t surov� data';
+    toggleRaw.textContent = RAW_TOGGLE_HIDE_TEXT;
   } else {
     rawEl.classList.add('hidden');
-    toggleRaw.textContent = 'Zobrazit surov� data';
+    toggleRaw.textContent = RAW_TOGGLE_SHOW_TEXT;
   }
 });
