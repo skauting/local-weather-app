@@ -41,6 +41,7 @@ button:disabled{cursor:wait;opacity:.65;transform:none}
 .credits-badge{font-weight:600;color:#0f172a}
 .menu-link{color:var(--accent);text-decoration:none;font-size:14px}
 .menu a.menu-item{display:block;color:inherit;text-decoration:none}
+.menu .menu-item.hidden{display:none}
 .menu a.menu-item.hidden{display:none}
 
 .menu{position:relative}

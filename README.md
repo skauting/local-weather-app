@@ -54,6 +54,9 @@ Pokud existuje v�ce worktrees, `./run-worktree.sh` nab�dne v�ber. Pr�pad
 
 - `./run-worktree.sh scaling-winner`
 
+Pokud vybran� worktree nem� vlastn� `.env`, `./run-worktree.sh` automaticky na�te `.env` z hlavn�ho checkoutu. Vlastn� `.env` ve worktree m� prednost.
+Pokud worktree nem� vlastn� `node_modules`, `./run-worktree.sh` automaticky vytvo�� symlink na `node_modules` z hlavn�ho checkoutu. Pokud `node_modules` neexistuje ani tam, je pot�eba spustit `npm install` v hlavn�m checkoutu.
+
 ## Verzov�n�
 
 Aplikace pou��v� **Semantic Versioning + build metadata**:
