@@ -12,7 +12,7 @@ const chatMessages = document.getElementById('chatMessages');
 const chatForm = document.getElementById('chatForm');
 const chatInput = document.getElementById('chatInput');
 const chatSend = document.getElementById('chatSend');
-chatStatusEl = document.getElementById('chatStatus');
+const chatStatusEl = document.getElementById('chatStatus');
 const appVersion = document.getElementById('appVersion');
 
 let latestRaw = null;
@@ -24,7 +24,6 @@ let selectedName = null;
 let chatBusy = false;
 let chatHistory = [];
 let versionCache = '...';
-let chatStatusEl = null;
 
 // Auth / usage state mirrors the server session; the server stays authoritative.
 let freeUsage = 0;
@@ -157,6 +156,11 @@ function escapeHtml(value) {
 function setChatEmpty(message) {
   if (!chatMessages) return;
   chatMessages.innerHTML = `<div class="chat-empty">${escapeHtml(message)}</div>`;
+}
+
+function setChatStatus(message) {
+  if (!chatStatusEl) return;
+  chatStatusEl.textContent = message;
 }
 
 function setChatStatus(message) {

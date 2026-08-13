@@ -9,10 +9,7 @@
   "scripts": {
     "start": "node server.js",
     "start:local": "node --use-system-ca server.js",
-    "dev": "nodemon --exec \"node --use-system-ca\" server.js",
-    "prestart": "node scripts/write-build-info.js",
-    "prestart:local": "node scripts/write-build-info.js",
-    "predev": "node scripts/write-build-info.js"
+    "dev": "nodemon --exec \"node --use-system-ca\" server.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.1",
