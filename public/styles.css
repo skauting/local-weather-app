@@ -33,6 +33,7 @@ button:disabled{cursor:wait;opacity:.65;transform:none}
 .muted{background:transparent;border:1px solid #eef2ff;padding:6px 10px;border-radius:8px;color:var(--muted);cursor:pointer}
 .error{margin-top:8px;color:#b91c1c;background:#fff1f2;padding:10px;border-radius:8px;border:1px solid #fecaca}
 .foot{margin-top:14px;color:var(--muted);font-size:13px;text-align:right}
+.version-badge{margin-top:6px;color:var(--muted);font-size:12px;text-align:right}
 
 .header-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
 .right-area{display:flex;align-items:center;gap:12px}

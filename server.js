@@ -12,6 +12,7 @@ const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.OPENWEATHER_API_KEY;
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-pro';
+const APP_VERSION = process.env.npm_package_version || 'dev';
 const FREE_LIMIT = 5;
 const SESSION_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_ANONYMOUS_SESSIONS = Math.max(
@@ -273,6 +274,10 @@ function isUuid(value) {
 app.get('/api/usage', async (req, res) => {
   const session = getSession(req, res);
   res.json(usagePayload(session, await getAuthenticatedUser(req, res)));
+});
+
+app.get('/api/version', (req, res) => {
+  res.json({ version: APP_VERSION });
 });
 
 app.post('/api/usage/reset', async (req, res) => {

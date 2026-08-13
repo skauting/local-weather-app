@@ -126,6 +126,17 @@ function updateMenuUI(){
   updateChatAvailability();
 }
 
+async function loadAppVersion() {
+  const versionEl = document.getElementById('appVersion');
+  if (!versionEl) return;
+  try {
+    const data = await api('/api/version');
+    versionEl.textContent = data.version || 'dev';
+  } catch (err) {
+    versionEl.textContent = 'dev';
+  }
+}
+
 function updateChatAvailability() {
   if (!chatToggle || !chatPanel) return;
   chatToggle.classList.remove('hidden');
@@ -454,6 +465,7 @@ function populateCountries() {
 // initialize UI
 populateCountries();
 updateUsageUI(); updateMenuUI(); loadUsage();
+loadAppVersion();
 
 // Reset button handler (clear usage)
 const resetBtn = document.getElementById('resetBtn');
