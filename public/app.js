@@ -307,7 +307,8 @@ if (chatForm && chatInput && chatMessages) {
     chatInput.disabled = true;
     chatHistory.push({ role: 'user', text: message });
     chatInput.value = '';
-    setChatEmpty('Načítám odpověď…');
+    renderChatHistory();
+    setChatStatus('Načítám odpověď…');
     try {
       const data = await api('/api/chat', {
         method: 'POST',
@@ -316,9 +317,11 @@ if (chatForm && chatInput && chatMessages) {
       });
       chatHistory.push({ role: 'assistant', text: data.message || '...' });
       renderChatHistory();
+      setChatStatus('');
     } catch (err) {
       chatHistory.push({ role: 'system', text: err.message });
       renderChatHistory();
+      setChatStatus('Chyba při odeslání.');
     } finally {
       chatBusy = false;
       chatSend.disabled = false;
@@ -471,10 +474,10 @@ loadAppVersion();
 const resetBtn = document.getElementById('resetBtn');
 if (resetBtn) {
   resetBtn.addEventListener('click', async ()=>{
-    if (!confirm('Opravdu chcete resetovat pocet pokusu na 0?')) return;
+    if (!confirm('Opravdu chcete resetovat počet pokusů na 0?')) return;
     try {
       applyUsage(await api('/api/usage/reset', { method: 'POST' }));
-      alert(`Pocet pokusu byl resetov�n. M�te opet ${freeLimit} voln�ch dotazu.`);
+      alert(`Počet pokusů byl resetován. Máte opět ${freeLimit} volných dotazů.`);
     } catch (err) { alert(err.message); }
   });
 }
