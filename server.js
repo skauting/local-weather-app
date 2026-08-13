@@ -2,6 +2,7 @@ require('dotenv').config({ quiet: true });
 
 const express = require('express');
 const axios = require('axios');
+const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
@@ -56,8 +57,9 @@ function readGitMetadata() {
 
 const APP_VERSION = createAppVersion();
 const APP_GIT = readGitMetadata();
-const CHAT_TIMEOUT_MS = 60000;
+const CHAT_TIMEOUT_MS = 120000;
 const CHAT_MAX_MESSAGES = 10;
+const DEEPSEEK_DEBUG_LOG_PATH = process.env.DEEPSEEK_DEBUG_LOG_PATH || path.join(__dirname, 'tmp_deepseek_debug.log');
 const CHAT_IDLE_CLOSE_MS = 30 * 60 * 1000;
 const FREE_LIMIT = 5;
 const SESSION_TTL_MS = 6 * 60 * 60 * 1000;
@@ -89,7 +91,7 @@ if (!API_KEY) {
 if (!DEEPSEEK_API_KEY) {
   console.warn('Varování: DEEPSEEK_API_KEY není nastaven.');
 }
-const deepseekClient = DEEPSEEK_API_KEY
+let deepseekClient = DEEPSEEK_API_KEY
   ? new OpenAI({ apiKey: DEEPSEEK_API_KEY, baseURL: 'https://api.deepseek.com' })
   : null;
 
@@ -659,6 +661,104 @@ function createHttpError(status, message, code) {
   return error;
 }
 
+function appendDeepseekDebugLog(entry) {
+  const line = `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`;
+  try {
+    fs.appendFileSync(DEEPSEEK_DEBUG_LOG_PATH, line, 'utf8');
+  } catch (error) {
+    console.error('DeepSeek debug log write error', error.message || error);
+  }
+}
+
+function cloneDeepseekMessages(messages) {
+  return (messages || []).map(message => ({
+    role: message.role,
+    content: typeof message.content === 'string' ? message.content : JSON.stringify(message.content)
+  }));
+}
+
+async function requestDeepseekChatCompletion({ phase, messages, meta = {}, temperature = 0 }) {
+  if (!deepseekClient) {
+    throw createHttpError(503, 'Chat není nakonfigurován.', 'CHAT_NOT_CONFIGURED');
+  }
+
+  const requestMeta = {
+    phase,
+    model: DEEPSEEK_MODEL,
+    timeoutMs: CHAT_TIMEOUT_MS,
+    meta,
+    messages: cloneDeepseekMessages(messages)
+  };
+  const startedAt = Date.now();
+
+  appendDeepseekDebugLog({ event: 'request', ...requestMeta });
+  console.log('DeepSeek request', JSON.stringify({
+    phase,
+    model: DEEPSEEK_MODEL,
+    timeoutMs: CHAT_TIMEOUT_MS,
+    meta
+  }));
+
+  try {
+    const completion = await Promise.race([
+      deepseekClient.chat.completions.create({
+        model: DEEPSEEK_MODEL,
+        messages,
+        stream: false,
+        temperature
+      }),
+      new Promise((_, reject) => {
+        setTimeout(() => {
+          const timeoutError = new Error('Chat momentálně neodpovídá. Zkuste to prosím znovu.');
+          timeoutError.status = 504;
+          reject(timeoutError);
+        }, CHAT_TIMEOUT_MS);
+      })
+    ]);
+
+    const reply = completion.choices?.[0]?.message?.content?.trim() || '';
+    const durationMs = Date.now() - startedAt;
+    appendDeepseekDebugLog({
+      event: 'response',
+      phase,
+      model: DEEPSEEK_MODEL,
+      durationMs,
+      meta,
+      reply
+    });
+    console.log('DeepSeek response', JSON.stringify({
+      phase,
+      model: DEEPSEEK_MODEL,
+      durationMs,
+      meta
+    }));
+    return completion;
+  } catch (error) {
+    const durationMs = Date.now() - startedAt;
+    appendDeepseekDebugLog({
+      event: 'error',
+      phase,
+      model: DEEPSEEK_MODEL,
+      durationMs,
+      meta,
+      error: {
+        message: error.message || String(error),
+        status: error.status || error.response?.status || null,
+        data: error.response?.data || null
+      }
+    });
+    console.error('DeepSeek error', JSON.stringify({
+      phase,
+      model: DEEPSEEK_MODEL,
+      durationMs,
+      meta,
+      message: error.message || String(error),
+      status: error.status || error.response?.status || null
+    }));
+    throw error;
+  }
+}
+
 function buildLocalizedPlace(place) {
   let displayName = place.name;
   try {
@@ -1009,59 +1109,249 @@ function isDateOnlyQuestion(message) {
   return /\b(co|jak[ýy])\s+je\s+(dnes|dneska)\s+za\s+den\b/i.test((message || '').toString());
 }
 
-async function inferWeatherChatIntent(history) {
-  const conversation = history.map(item => {
-    const role = item.role === 'assistant' ? 'Asistent' : 'Uživatel';
-    return `${role}: ${item.text}`;
-  }).join('\n');
+function normalizeRequestedCities(value) {
+  const seen = new Set();
+  const cities = [];
+  const entries = Array.isArray(value) ? value : [value];
 
-  const completion = await Promise.race([
-    deepseekClient.chat.completions.create({
-      model: DEEPSEEK_MODEL,
-      messages: [
-        {
-          role: 'system',
-          content: [
-            'Analyzuj českou konverzaci o počasí a vrať pouze JSON bez markdownu.',
-            'Použij kontext celé konverzace, ale intent určuj podle poslední uživatelské zprávy.',
-            'Pokud poslední zpráva navazuje zájmeny jako "tam", "a zítra", "a co vítr", přenes poslední explicitně zmíněné město.',
-            'Pokud poslední zpráva opravuje předchozí odpověď nebo upřesňuje dotaz slovy jako "ptal jsem se", "myslel jsem", "ne, chci", zachovej město i čas z předchozího počasového dotazu.',
-            'Pokud chybí město, nastav needsCity=true a city=null.',
-            'Pokud zpráva není o počasí, nastav weatherRelevant=false.'
-          ].join(' ')
-        },
-        {
-          role: 'user',
-          content: [
-            'Vrať JSON ve tvaru:',
-            '{"weatherRelevant":true,"needsCity":false,"city":"Praha","userQuestion":"..."}',
-            '',
-            'Konverzace:',
-            conversation
-          ].join('\n')
-        }
-      ],
-      stream: false,
-      temperature: 0
-    }),
-    new Promise((_, reject) => {
-      setTimeout(() => {
-        const timeoutError = new Error('Chat momentálně neodpovídá. Zkuste to prosím znovu.');
-        timeoutError.status = 504;
-        reject(timeoutError);
-      }, CHAT_TIMEOUT_MS);
-    })
-  ]);
+  for (const entry of entries) {
+    if (typeof entry !== 'string') continue;
+    const normalized = normalizeSearch(entry);
+    if (!normalized) continue;
+
+    const commaParts = normalized.split(/\s*,\s*/).filter(Boolean);
+    const hasListSeparators =
+      commaParts.length > 2 ||
+      /[;\/]/.test(normalized) ||
+      /\s+(?:a|i|and)\s+/i.test(normalized);
+    const parts = hasListSeparators
+      ? normalized
+          .split(/\s*(?:,|;|\/|\s+a\s+|\s+i\s+|\s+and\s+)\s*/i)
+          .map(part => normalizeSearch(part).slice(0, 100))
+          .filter(Boolean)
+      : [normalized.slice(0, 100)];
+
+    for (const city of parts) {
+      const key = city.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      cities.push(city);
+    }
+  }
+
+  return cities;
+}
+
+function formatQuotedCityList(cities) {
+  const items = normalizeRequestedCities(cities).map(city => `„${city}“`);
+  if (!items.length) return '';
+  if (items.length === 1) return items[0];
+  if (items.length === 2) return `${items[0]} a ${items[1]}`;
+  return `${items.slice(0, -1).join(', ')} a ${items.at(-1)}`;
+}
+
+function extractExplicitCitiesFromMessage(message) {
+  const text = (message || '').toString().trim();
+  if (!text) return [];
+
+  const cleaned = text
+    .replace(/[?!]+$/g, '')
+    .replace(/\b(prosím|please)\b/gi, '')
+    .trim();
+
+  const match = cleaned.match(/\b(?:v|ve|pro|mezi|porovnej)\s+(.+)$/i);
+  const candidate = match?.[1] || cleaned;
+  const cities = normalizeRequestedCities(candidate);
+
+  return cities.length > 1 ? cities : [];
+}
+
+function isMultiCityCorrection(message) {
+  return /\b(ne(?:ní|ni)\s+to\s+jedno\s+m[ěe]sto|jsou\s+to\s+\d+\s+r[ůu]zn[áa]\s+m[ěe]sta|jsou\s+to\s+(dv[ěe]|t[řr]i)\s+r[ůu]zn[áa]\s+m[ěe]sta)\b/i
+    .test((message || '').toString());
+}
+
+function extractCitiesFromHistoryMessage(message) {
+  const text = (message || '').toString();
+  const quoted = text.match(/„([^“]+)“/);
+  if (quoted?.[1]) {
+    const quotedCities = normalizeRequestedCities(quoted[1]);
+    if (quotedCities.length > 1) return quotedCities;
+  }
+  return extractExplicitCitiesFromMessage(text);
+}
+
+function isLikelyWeatherMessage(message) {
+  return /\b(jak|jaka|jaká|kolik|bude|bude\s+v|je|teplota|pršet|prset|sněžit|snezit|vítr|vitr|vlhkost|počasí|pocasi|aktuální|aktualni)\b/i
+    .test((message || '').toString());
+}
+
+function isLikelyWeatherFollowUp(history, latestUserMessage) {
+  const text = (latestUserMessage || '').toString().trim();
+  if (isLikelyWeatherMessage(text)) return true;
+  if (!/^(a|a\s+co|a\s+v)\b/i.test(text)) return false;
+  return history.some(item => item.role === 'user' && isLikelyWeatherMessage(item.text));
+}
+
+function inferWeatherChatIntentLocally(history) {
+  const latestUserMessage = history.filter(item => item.role === 'user').at(-1)?.text || '';
+  if (!latestUserMessage) return null;
+
+  if (!isMultiCityCorrection(latestUserMessage)) return null;
+
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const item = history[index];
+    const previousCities = extractCitiesFromHistoryMessage(item.text);
+    if (previousCities.length > 1) {
+      return {
+        weatherRelevant: true,
+        needsCity: false,
+        city: previousCities[0],
+        cities: previousCities,
+        userQuestion: latestUserMessage,
+        source: 'local-correction-history'
+      };
+    }
+  }
+
+  return null;
+}
+
+function getRecentIntentContext(history) {
+  const latestUserIndex = history.map(item => item.role).lastIndexOf('user');
+  const previousUser = latestUserIndex > 0
+    ? history.slice(0, latestUserIndex).filter(item => item.role === 'user').at(-1)?.text || ''
+    : '';
+  const previousAssistant = latestUserIndex > 0
+    ? history.slice(0, latestUserIndex).filter(item => item.role === 'assistant').at(-1)?.text || ''
+    : '';
+  return {
+    previousUser,
+    previousAssistant,
+    latestUser: history[latestUserIndex]?.text || ''
+  };
+}
+
+async function inferFocusedMultiCityIntent(history) {
+  const context = getRecentIntentContext(history);
+  const messages = [
+    {
+      role: 'system',
+      content: [
+        'Zpracuj český follow-up o počasí a vrať pouze JSON bez markdownu.',
+        'Uživatel výslovně uvádí více měst v poslední zprávě.',
+        'Normalizuj názvy měst do běžného tvaru pro vyhledání, například Praha, Brno, Olomouc, Ostrava.',
+        'Použij jen krátký kontext předchozího dotazu a odpovědi.',
+        'Vrať JSON ve tvaru {"weatherRelevant":true,"needsCity":false,"city":"Praha","cities":["Praha","Brno"],"userQuestion":"..."}.' ,
+        'Pokud si nejsi jistý, vrať weatherRelevant=true a vyplň cities podle poslední uživatelské zprávy v nejpravděpodobnějším tvaru.'
+      ].join(' ')
+    },
+    {
+      role: 'user',
+      content: JSON.stringify(context)
+    }
+  ];
+  const completion = await requestDeepseekChatCompletion({
+    phase: 'intent',
+    messages,
+    meta: {
+      historyLength: history.length,
+      latestUserMessage: context.latestUser,
+      mode: 'focused-multi-city'
+    }
+  });
 
   const content = completion.choices?.[0]?.message?.content?.trim() || '';
   const parsed = parseJsonObject(content);
   if (!parsed) throw createHttpError(502, 'Nepodařilo se zpracovat požadavek chatu.', 'CHAT_INTENT_INVALID');
 
-  const city = normalizeSearch(parsed.city).slice(0, 100) || null;
+  const cities = normalizeRequestedCities(parsed.cities);
+  if (!cities.length) {
+    cities.push(...normalizeRequestedCities(parsed.city));
+  }
+
   return {
     weatherRelevant: parsed.weatherRelevant !== false,
-    needsCity: Boolean(parsed.needsCity) || !city,
+    needsCity: Boolean(parsed.needsCity) || !cities.length,
+    city: cities[0] || null,
+    cities,
+    userQuestion: (parsed.userQuestion || '').toString().trim()
+  };
+}
+
+async function inferWeatherChatIntent(history) {
+  const localIntent = inferWeatherChatIntentLocally(history);
+  if (localIntent) {
+    appendDeepseekDebugLog({
+      event: 'skip',
+      phase: 'intent',
+      reason: localIntent.source,
+      latestUserMessage: localIntent.userQuestion,
+      cities: localIntent.cities
+    });
+    return localIntent;
+  }
+
+  const latestUserMessage = history.filter(item => item.role === 'user').at(-1)?.text || '';
+  const explicitCities = extractExplicitCitiesFromMessage(latestUserMessage);
+  if (explicitCities.length > 1 && isLikelyWeatherFollowUp(history, latestUserMessage)) {
+    return inferFocusedMultiCityIntent(history);
+  }
+
+  const conversation = history.map(item => {
+    const role = item.role === 'assistant' ? 'Asistent' : 'Uživatel';
+    return `${role}: ${item.text}`;
+  }).join('\n');
+
+  const messages = [
+    {
+      role: 'system',
+      content: [
+        'Analyzuj českou konverzaci o počasí a vrať pouze JSON bez markdownu.',
+        'Použij kontext celé konverzace, ale intent určuj podle poslední uživatelské zprávy.',
+        'Pokud poslední zpráva navazuje zájmeny jako "tam", "ve všech", "a zítra", "a co vítr", "které z nich", přenes poslední explicitně zmíněné město nebo celý seznam měst.',
+        'Pokud poslední zpráva opravuje předchozí odpověď nebo upřesňuje dotaz slovy jako "ptal jsem se", "myslel jsem", "ne, chci", "jsou to 3 různá města", zachovej město, seznam měst i čas z předchozího počasového dotazu.',
+        'Pokud uživatel zmiňuje více měst, vrať je v poli cities ve stejném pořadí.',
+        'I když je město jen jedno, vrať ho také v poli cities s jednou položkou.',
+        'Pokud chybí město, nastav needsCity=true, city=null a cities=[].',
+        'Pokud zpráva není o počasí, nastav weatherRelevant=false.'
+      ].join(' ')
+    },
+    {
+      role: 'user',
+      content: [
+        'Vrať JSON ve tvaru:',
+        '{"weatherRelevant":true,"needsCity":false,"city":"Praha","cities":["Praha"],"userQuestion":"..."}',
+        '',
+        'Konverzace:',
+        conversation
+      ].join('\n')
+    }
+  ];
+  const completion = await requestDeepseekChatCompletion({
+    phase: 'intent',
+    messages,
+    meta: {
+      historyLength: history.length,
+      latestUserMessage
+    }
+  });
+
+  const content = completion.choices?.[0]?.message?.content?.trim() || '';
+  const parsed = parseJsonObject(content);
+  if (!parsed) throw createHttpError(502, 'Nepodařilo se zpracovat požadavek chatu.', 'CHAT_INTENT_INVALID');
+
+  const cities = normalizeRequestedCities(parsed.cities);
+  if (!cities.length) {
+    cities.push(...normalizeRequestedCities(parsed.city));
+  }
+
+  const city = cities[0] || null;
+  return {
+    weatherRelevant: parsed.weatherRelevant !== false,
+    needsCity: Boolean(parsed.needsCity) || !cities.length,
     city,
+    cities,
     userQuestion: (parsed.userQuestion || '').toString().trim()
   };
 }
@@ -1124,28 +1414,28 @@ function createWeatherChatDataset(bundle) {
   });
 
   return {
-    location: {
-      name: bundle.location?.name || null,
-      country: bundle.location?.country || null,
+    loc: {
+      n: bundle.location?.name || null,
+      c: bundle.location?.country || null,
       lat: bundle.location?.lat ?? null,
       lon: bundle.location?.lon ?? null
     },
     now: {
-      observedAt: formatWeatherDateTime(current.dt, tzOffset),
-      dayName: formatWeatherDayName(current.dt, tzOffset),
-      description: current.weather?.[0]?.description || null,
-      tempC: Number.isFinite(Number(current.main?.temp)) ? Math.round(Number(current.main.temp)) : null,
-      feelsLikeC: Number.isFinite(Number(current.main?.feels_like)) ? Math.round(Number(current.main.feels_like)) : null,
-      humidityPct: Number.isFinite(Number(current.main?.humidity)) ? Math.round(Number(current.main.humidity)) : null,
-      pressureHPa: Number.isFinite(Number(current.main?.pressure)) ? Math.round(Number(current.main.pressure)) : null,
-      visibilityM: Number.isFinite(Number(current.visibility)) ? Math.round(Number(current.visibility)) : null,
-      cloudinessPct: Number.isFinite(Number(current.clouds?.all)) ? Math.round(Number(current.clouds.all)) : null,
-      windMS: Number.isFinite(Number(current.wind?.speed)) ? Math.round(Number(current.wind.speed) * 10) / 10 : null,
-      windGustMS: Number.isFinite(Number(current.wind?.gust)) ? Math.round(Number(current.wind.gust) * 10) / 10 : null,
-      sunrise: formatWeatherTime(current.sys?.sunrise, tzOffset),
-      sunset: formatWeatherTime(current.sys?.sunset, tzOffset)
+      at: formatWeatherDateTime(current.dt, tzOffset),
+      day: formatWeatherDayName(current.dt, tzOffset),
+      desc: current.weather?.[0]?.description || null,
+      t: Number.isFinite(Number(current.main?.temp)) ? Math.round(Number(current.main.temp)) : null,
+      feel: Number.isFinite(Number(current.main?.feels_like)) ? Math.round(Number(current.main.feels_like)) : null,
+      hum: Number.isFinite(Number(current.main?.humidity)) ? Math.round(Number(current.main.humidity)) : null,
+      press: Number.isFinite(Number(current.main?.pressure)) ? Math.round(Number(current.main.pressure)) : null,
+      vis: Number.isFinite(Number(current.visibility)) ? Math.round(Number(current.visibility)) : null,
+      cloud: Number.isFinite(Number(current.clouds?.all)) ? Math.round(Number(current.clouds.all)) : null,
+      wind: Number.isFinite(Number(current.wind?.speed)) ? Math.round(Number(current.wind.speed) * 10) / 10 : null,
+      gust: Number.isFinite(Number(current.wind?.gust)) ? Math.round(Number(current.wind.gust) * 10) / 10 : null,
+      rise: formatWeatherTime(current.sys?.sunrise, tzOffset),
+      set: formatWeatherTime(current.sys?.sunset, tzOffset)
     },
-    airQuality: air ? {
+    air: air ? {
       aqi: air.aqi,
       label: air.label,
       pm25: Number.isFinite(Number(air.components.pm2_5)) ? Number(air.components.pm2_5) : null,
@@ -1154,60 +1444,118 @@ function createWeatherChatDataset(bundle) {
       no2: Number.isFinite(Number(air.components.no2)) ? Number(air.components.no2) : null,
       co: Number.isFinite(Number(air.components.co)) ? Number(air.components.co) : null
     } : null,
-    forecastRange: {
-      startsAt: forecastItems[0] ? formatWeatherDateTime(forecastItems[0].dt, tzOffset) : null,
-      endsAt: forecastItems.length ? formatWeatherDateTime(forecastItems[forecastItems.length - 1].dt, tzOffset) : null
+    range: {
+      from: forecastItems[0] ? formatWeatherDateTime(forecastItems[0].dt, tzOffset) : null,
+      to: forecastItems.length ? formatWeatherDateTime(forecastItems[forecastItems.length - 1].dt, tzOffset) : null
     },
-    daily
+    days: daily.map(day => ({
+      d: day.date,
+      day: day.dayName,
+      min: day.minTempC,
+      max: day.maxTempC,
+      desc: day.description,
+      pop: day.maxPrecipProbabilityPct,
+      precip: day.precipMm,
+      slots: day.entries.map(entry => ({
+        at: entry.at,
+        t: entry.tempC,
+        feel: entry.feelsLikeC,
+        hum: entry.humidityPct,
+        wind: entry.windMS,
+        desc: entry.description,
+        pop: entry.precipProbabilityPct,
+        rain: entry.rainMm3h,
+        snow: entry.snowMm3h
+      }))
+    }))
   };
 }
 
-async function answerWeatherQuestionWithData(history, intent, bundle) {
+async function fetchWeatherChatBundles(intent) {
+  const requestedCities = normalizeRequestedCities(intent.cities?.length ? intent.cities : intent.city);
+  const results = await Promise.all(requestedCities.map(async (requestedCity) => {
+    try {
+      const bundle = await fetchWeatherBundle({
+        city: requestedCity,
+        preferredName: requestedCity
+      });
+      return { requestedCity, bundle, error: null };
+    } catch (error) {
+      return { requestedCity, bundle: null, error };
+    }
+  }));
+
+  const bundles = [];
+  const missingCities = [];
+
+  for (const result of results) {
+    if (!result.error) {
+      bundles.push(result.bundle);
+      continue;
+    }
+
+    const status = result.error.status || result.error.response?.status;
+    if (status === 404) {
+      missingCities.push(result.requestedCity);
+      continue;
+    }
+
+    throw result.error;
+  }
+
+  if (!bundles.length && missingCities.length) {
+    const error = createHttpError(404, 'Města nebyla nalezena', 'CITY_NOT_FOUND');
+    error.missingCities = missingCities;
+    throw error;
+  }
+
+  return { bundles, missingCities };
+}
+
+async function answerWeatherQuestionWithData(history, intent, bundles) {
   const latestUserMessage = history.filter(item => item.role === 'user').at(-1)?.text || intent.userQuestion || '';
   const conversation = history.map(item => ({
     role: item.role === 'assistant' ? 'assistant' : 'user',
     text: item.text
   }));
-  const weatherData = createWeatherChatDataset(bundle);
-  const locationLabel = buildLocationLabel(bundle.location);
+  const weatherData = bundles.map(createWeatherChatDataset);
+  const locationLabels = bundles.map(bundle => buildLocationLabel(bundle.location));
 
-  const completion = await Promise.race([
-    deepseekClient.chat.completions.create({
-      model: DEEPSEEK_MODEL,
-      messages: [
-        {
-          role: 'system',
-          content: [
-            'Jsi český asistent pro počasí.',
-            'Odpovídej pouze z dodaných dat OpenWeatherMap.',
-            'Odpověz přímo na poslední uživatelský dotaz, nepiš automaticky vícedenní souhrn.',
-            'Když se uživatel ptá na konkrétní den, čas, minimum, maximum nebo srážky, vytáhni přesně tu hodnotu z poskytnutých dat.',
-            'Použij kontext předchozí konverzace pro odkazy typu "tam", "v neděli", "a co vítr", ale finální odpověď má řešit poslední dotaz.',
-            'Pokud požadovaný den nebo údaj v datech chybí, řekni to jasně a stručně.',
-            `Místo je ${locationLabel}.`
-          ].join(' ')
-        },
-        {
-          role: 'user',
-          content: JSON.stringify({
-            latestQuestion: latestUserMessage,
-            resolvedCity: intent.city,
-            conversation,
-            weatherData
-          })
-        }
-      ],
-      stream: false,
-      temperature: 0
-    }),
-    new Promise((_, reject) => {
-      setTimeout(() => {
-        const timeoutError = new Error('Chat momentálně neodpovídá. Zkuste to prosím znovu.');
-        timeoutError.status = 504;
-        reject(timeoutError);
-      }, CHAT_TIMEOUT_MS);
-    })
-  ]);
+  const messages = [
+    {
+      role: 'system',
+      content: [
+        'Jsi český asistent pro počasí.',
+        'Odpovídej pouze z dodaných dat OpenWeatherMap.',
+        'Odpověz přímo na poslední uživatelský dotaz, nepiš automaticky vícedenní souhrn.',
+        'Pokud dostaneš data pro více měst, odpověz pro každé město zvlášť nebo je stručně porovnej podle dotazu.',
+        'Když se uživatel ptá na konkrétní den, čas, minimum, maximum nebo srážky, vytáhni přesně tu hodnotu z poskytnutých dat.',
+        'Použij kontext předchozí konverzace pro odkazy typu "tam", "v neděli", "a co vítr", ale finální odpověď má řešit poslední dotaz.',
+        'Pokud požadovaný den nebo údaj v datech chybí, řekni to jasně a stručně.',
+        'Legenda datasetu: loc={n název,c stát}, now={at čas,day den,desc popis,t teplota,feel pocit,hum vlhkost,press tlak,vis viditelnost,cloud oblačnost,wind vítr,gust nárazy,rise východ,set západ}, air={aqi,label,pm25,pm10,o3,no2,co}, range={from,to}, days=[{d datum,day,min,max,desc,pop pravděpodobnost srážek v %,precip srážky v mm,slots=[{at,t,feel,hum,wind,desc,pop,rain,snow}]}].',
+        `K dispozici máš data pro tato místa: ${locationLabels.join('; ')}.`
+      ].join(' ')
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        latestQuestion: latestUserMessage,
+        resolvedCity: intent.city,
+        resolvedCities: locationLabels,
+        conversation,
+        weatherData
+      })
+    }
+  ];
+  const completion = await requestDeepseekChatCompletion({
+    phase: 'answer',
+    messages,
+    meta: {
+      cityCount: bundles.length,
+      cities: locationLabels,
+      latestUserMessage
+    }
+  });
 
   const reply = completion.choices?.[0]?.message?.content?.trim();
   if (!reply) throw createHttpError(502, 'Nepodařilo se vytvořit odpověď z dat o počasí.', 'CHAT_REPLY_INVALID');
@@ -1340,15 +1688,24 @@ app.post('/api/chat', async (req, res) => {
         reply = 'Potřebuji ještě město. Napiš prosím například „Jaké je teď počasí v Praze?“';
       } else {
         try {
-          const bundle = await fetchWeatherBundle({
-            city: intent.city,
-            preferredName: intent.city
-          });
-          reply = await answerWeatherQuestionWithData(history, intent, bundle);
+          const { bundles, missingCities } = await fetchWeatherChatBundles(intent);
+          reply = await answerWeatherQuestionWithData(history, intent, bundles);
+          if (missingCities.length) {
+            const missingLabel = formatQuotedCityList(missingCities);
+            const prefix = missingCities.length === 1
+              ? `Město ${missingLabel} jsem v OpenWeatherMap nenašel. `
+              : `Města ${missingLabel} jsem v OpenWeatherMap nenašel. `;
+            reply = `${prefix}${reply}`;
+          }
         } catch (error) {
           const status = error.status || error.response?.status;
           if (status === 404) {
-            reply = `Město „${intent.city}“ jsem v OpenWeatherMap nenašel. Zkus prosím přesnější název, ideálně i se státem.`;
+            const missingCities = normalizeRequestedCities(error.missingCities?.length ? error.missingCities : intent.cities);
+            if (missingCities.length > 1) {
+              reply = `Města ${formatQuotedCityList(missingCities)} jsem v OpenWeatherMap nenašel. Zkus prosím přesnější názvy, ideálně i se státem.`;
+            } else {
+              reply = `Město ${formatQuotedCityList(missingCities.length ? missingCities : intent.city)} jsem v OpenWeatherMap nenašel. Zkus prosím přesnější název, ideálně i se státem.`;
+            }
           } else {
             throw error;
           }
@@ -1903,4 +2260,23 @@ app.get('/api/weather', weatherApiLimit, requireWeatherConfig, async (req, res) 
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-app.listen(PORT, () => console.log(`Server běží na http://localhost:${PORT}`));
+if (require.main === module) {
+  app.listen(PORT, () => console.log(`Server běží na http://localhost:${PORT}`));
+}
+
+module.exports = {
+  app,
+  normalizeRequestedCities,
+  extractExplicitCitiesFromMessage,
+  inferWeatherChatIntentLocally,
+  inferWeatherChatIntent,
+  createWeatherChatDataset,
+  fetchWeatherChatBundles,
+  answerWeatherQuestionWithData,
+  setDeepseekClientForTesting(client) {
+    deepseekClient = client;
+  },
+  getDeepseekDebugLogPath() {
+    return DEEPSEEK_DEBUG_LOG_PATH;
+  }
+};
