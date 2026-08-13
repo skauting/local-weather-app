@@ -506,12 +506,18 @@ app.get('/api/chat/history', async (req, res) => {
 
   const conversation = await getActiveConversation(user.id);
   if (!conversation) {
-    return res.json({ messages: [], conversationId: null, maxMessages: CHAT_MAX_MESSAGES });
+    return res.json({
+      messages: [],
+      messageCount: 0,
+      conversationId: null,
+      maxMessages: CHAT_MAX_MESSAGES
+    });
   }
 
   const messages = await listConversationMessages(conversation.id);
   res.json({
     messages,
+    messageCount: messages.length,
     conversationId: conversation.id,
     maxMessages: CHAT_MAX_MESSAGES
   });
@@ -537,9 +543,11 @@ app.post('/api/chat', async (req, res) => {
   try {
     let conversation = await getOrCreateActiveConversation(user.id);
     const messageCount = await getConversationMessageCount(conversation.id);
+    let rotated = false;
     if (messageCount + 2 > CHAT_MAX_MESSAGES) {
       await closeConversation(conversation.id);
       conversation = await createConversation(user.id);
+      rotated = true;
     }
 
     await addConversationMessage({
@@ -587,9 +595,13 @@ app.post('/api/chat', async (req, res) => {
       role: 'assistant',
       content: reply
     });
+    const messages = await listConversationMessages(conversation.id);
 
     res.json({
       message: reply,
+      messages,
+      messageCount: messages.length,
+      rotated,
       conversationId: conversation.id,
       maxMessages: CHAT_MAX_MESSAGES
     });
