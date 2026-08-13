@@ -73,56 +73,79 @@
         <button id="closeAuth" class="modal-close" type="button" aria-label="Zavřít">×</button>
         <div class="auth-forms">
           <div id="authMessage" class="auth-message" role="status">Bez registrace můžete provést 5 dotazů. Po registraci získáte 5 kreditů na další hledání.</div>
-
-          <form id="loginForm" class="auth-form hidden">
-            <h3>Přihlásit se</h3>
-            <label class="field">
-              <span>E-mail</span>
-              <input id="loginEmail" type="email" autocomplete="email" required />
-            </label>
-            <label class="field">
-              <span>Heslo</span>
-              <input id="loginPassword" type="password" autocomplete="current-password" required />
-            </label>
-            <button id="doLogin" type="submit">Přihlásit</button>
-          </form>
-
-          <form id="registerForm" class="auth-form hidden">
-            <h3>Vytvořit účet</h3>
-            <div class="field-row">
-              <label class="field">
-                <span>Jméno</span>
-                <input id="regFirstName" autocomplete="given-name" maxlength="100" required />
-              </label>
-              <label class="field">
-                <span>Příjmení</span>
-                <input id="regLastName" autocomplete="family-name" maxlength="100" required />
-              </label>
-            </div>
-            <label class="field">
-              <span>E-mail</span>
-              <input id="regEmail" type="email" autocomplete="email" required />
-            </label>
-            <label class="field">
-              <span>Telefon</span>
-              <input id="regPhone" type="tel" autocomplete="tel" minlength="7" maxlength="32" placeholder="+420 123 456 789" required />
-            </label>
-            <label class="field">
-              <span>Země</span>
-              <select id="regCountry" autocomplete="country" required>
-                <option value="">Vyberte zemi</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>Heslo</span>
-              <input id="regPassword" type="password" autocomplete="new-password" minlength="8" required />
-              <small>Minimálně 8 znaků</small>
-            </label>
-            <button id="doRegister" type="submit">Vytvořit účet</button>
-          </form>
+          <div id="authFormHost"></div>
         </div>
       </div>
     </div>
+
+    <template id="loginFormTemplate">
+      <form id="loginForm" class="auth-form" method="post" action="/api/auth/login" autocomplete="on">
+        <h3>Přihlásit se</h3>
+        <label class="field" for="loginEmail">
+          <span>E-mail</span>
+          <input
+            id="loginEmail"
+            name="email"
+            type="email"
+            inputmode="email"
+            autocomplete="username"
+            autocapitalize="off"
+            spellcheck="false"
+            required
+          />
+        </label>
+        <label class="field" for="loginPassword">
+          <span>Heslo</span>
+          <input id="loginPassword" name="password" type="password" autocomplete="current-password" required />
+        </label>
+        <button id="doLogin" type="submit">Přihlásit</button>
+      </form>
+    </template>
+
+    <template id="registerFormTemplate">
+      <form id="registerForm" class="auth-form" method="post" action="/api/auth/register" autocomplete="on">
+        <h3>Vytvořit účet</h3>
+        <div class="field-row">
+          <label class="field" for="regFirstName">
+            <span>Jméno</span>
+            <input id="regFirstName" name="firstName" autocomplete="given-name" maxlength="100" required />
+          </label>
+          <label class="field" for="regLastName">
+            <span>Příjmení</span>
+            <input id="regLastName" name="lastName" autocomplete="family-name" maxlength="100" required />
+          </label>
+        </div>
+        <label class="field" for="regEmail">
+          <span>E-mail</span>
+          <input
+            id="regEmail"
+            name="email"
+            type="email"
+            inputmode="email"
+            autocomplete="email"
+            autocapitalize="off"
+            spellcheck="false"
+            required
+          />
+        </label>
+        <label class="field" for="regPhone">
+          <span>Telefon</span>
+          <input id="regPhone" name="phone" type="tel" autocomplete="tel" minlength="7" maxlength="32" placeholder="+420 123 456 789" required />
+        </label>
+        <label class="field" for="regCountry">
+          <span>Země</span>
+          <select id="regCountry" name="countryCode" autocomplete="country-name" required>
+            <option value="">Vyberte zemi</option>
+          </select>
+        </label>
+        <label class="field" for="regPassword">
+          <span>Heslo</span>
+          <input id="regPassword" name="password" type="password" autocomplete="new-password" minlength="8" required />
+          <small>Minimálně 8 znaků</small>
+        </label>
+        <button id="doRegister" type="submit">Vytvořit účet</button>
+      </form>
+    </template>
 
   </main>
 
