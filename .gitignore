@@ -1,5 +1,6 @@
 node_modules/
 .env
 tmp_*.json
+tmp_*.log
 cookies.txt
 c2.txt
