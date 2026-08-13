@@ -219,7 +219,13 @@ async function getAuthenticatedUser(req, res) {
     return null;
   }
 
-  if (session.user && session.userAccessToken === accessToken) return session.user;
+  if (session.user && session.userAccessToken === accessToken) {
+    const profile = await getProfile(session.user.id);
+    if (profile) {
+      session.user = publicUser({ id: session.user.id, email: session.user.email }, profile);
+    }
+    return session.user;
+  }
 
   try {
     const user = await resolveUserFromTokens(req, res, accessToken, refreshToken);
@@ -646,6 +652,568 @@ function formatChatError(err) {
   };
 }
 
+function createHttpError(status, message, code) {
+  const error = new Error(message);
+  error.status = status;
+  if (code) error.code = code;
+  return error;
+}
+
+function buildLocalizedPlace(place) {
+  let displayName = place.name;
+  try {
+    const localNames = Object.values(place.local_names || {}).map(value => (value || '').toString());
+    const csLocal = place.local_names?.cs || place.local_names?.cz;
+    if (place.country === 'CZ') {
+      if (localNames.some(value => /praha/i.test(value))) displayName = 'Praha';
+      else if (csLocal) displayName = csLocal;
+    } else if (csLocal) {
+      displayName = csLocal;
+    }
+  } catch (error) {
+    displayName = place.name;
+  }
+
+  const state = place.state && norm(place.state) !== norm(displayName) && norm(place.state) !== norm(place.name)
+    ? place.state
+    : '';
+
+  return {
+    ...place,
+    shortName: displayName,
+    display: `${displayName}${state ? ', ' + state : ''}${place.country ? ', ' + place.country : ''}`
+  };
+}
+
+function rankPlaces(query, items) {
+  const qn = norm(query);
+  let list = (items || []).map(item => ({
+    name: item.name,
+    local_names: item.local_names || {},
+    state: item.state,
+    country: item.country,
+    lat: item.lat,
+    lon: item.lon,
+    population: item.population || 0
+  }));
+
+  list = list.map(item => {
+    const localized = buildLocalizedPlace(item);
+    const localValues = Object.values(localized.local_names || {}).map(value => norm(value));
+    let score = 0;
+
+    if (norm(localized.name) === qn) score += 120;
+    if (localValues.includes(qn)) score += 120;
+    if (localValues.some(value => value.includes(qn))) score += 60;
+    if (localized.country === 'CZ') score += 80;
+    if (qn === 'praha' && norm(localized.name) === 'prague') score += 50;
+    score += Math.min(localized.population || 0, 1000000) / 10000;
+
+    return { ...localized, _score: score };
+  });
+
+  list.sort((a, b) => (b._score || 0) - (a._score || 0));
+
+  const seen = new Map();
+  for (const item of list) {
+    const key = `${(item.lat || 0).toFixed(4)}|${(item.lon || 0).toFixed(4)}`;
+    if (!seen.has(key)) seen.set(key, item);
+  }
+
+  const deduped = Array.from(seen.values());
+  if (qn === 'praha' || qn === 'prague') {
+    const idx = deduped.findIndex(item => item.country === 'CZ');
+    if (idx === -1) {
+      deduped.unshift({
+        name: 'Praha',
+        state: '',
+        country: 'CZ',
+        lat: 50.0755381,
+        lon: 14.4378005,
+        population: 1300000,
+        shortName: 'Praha',
+        display: 'Praha, CZ'
+      });
+    } else if (idx > 0) {
+      const [prague] = deduped.splice(idx, 1);
+      deduped.unshift(prague);
+    }
+  }
+
+  return deduped;
+}
+
+async function lookupPlaces(query, limit = 8) {
+  const safeQuery = normalizeSearch(query);
+  const safeLimit = Math.max(1, Number.parseInt(limit, 10) || 1);
+  const url = 'https://api.openweathermap.org/geo/1.0/direct';
+  const response = await axios.get(url, {
+    params: { q: safeQuery, limit: Math.max(safeLimit, 12), appid: API_KEY }
+  });
+  return rankPlaces(safeQuery, response.data || []).slice(0, safeLimit);
+}
+
+async function reverseLookupPlace(lat, lon) {
+  const url = 'https://api.openweathermap.org/geo/1.0/reverse';
+  const response = await axios.get(url, {
+    params: { lat, lon, limit: 1, appid: API_KEY }
+  });
+  return response.data?.[0] || null;
+}
+
+async function fetchWeatherBundle({ city, lat, lon, preferredName = '' }) {
+  let resolvedLat = lat;
+  let resolvedLon = lon;
+  let name = normalizeSearch(preferredName);
+  let country = '';
+  const requestedCity = normalizeSearch(city);
+
+  if (resolvedLat != null && resolvedLon != null) {
+    resolvedLat = Number.parseFloat(resolvedLat);
+    resolvedLon = Number.parseFloat(resolvedLon);
+    if (
+      !Number.isFinite(resolvedLat) ||
+      !Number.isFinite(resolvedLon) ||
+      resolvedLat < -90 ||
+      resolvedLat > 90 ||
+      resolvedLon < -180 ||
+      resolvedLon > 180
+    ) {
+      throw createHttpError(400, 'Neplatné souřadnice', 'INVALID_COORDINATES');
+    }
+
+    try {
+      const place = await reverseLookupPlace(resolvedLat, resolvedLon);
+      if (place) {
+        country = place.country || '';
+        if (!name) {
+          const localized = buildLocalizedPlace(place);
+          name = localized.shortName || localized.name || '';
+        }
+      }
+    } catch (error) {
+      // Reverse geocoding is best-effort only.
+    }
+
+    if (!name && requestedCity) name = requestedCity;
+  } else {
+    if (!requestedCity) {
+      throw createHttpError(400, 'Město nebo souřadnice jsou povinné', 'MISSING_LOCATION');
+    }
+    const [place] = await lookupPlaces(requestedCity, 1);
+    if (!place) throw createHttpError(404, 'Město nebylo nalezeno', 'CITY_NOT_FOUND');
+    resolvedLat = place.lat;
+    resolvedLon = place.lon;
+    name = name || place.shortName || place.name || requestedCity;
+    country = place.country || '';
+  }
+
+  const weatherParams = {
+    lat: resolvedLat,
+    lon: resolvedLon,
+    units: 'metric',
+    appid: API_KEY
+  };
+
+  const [currentResult, forecastResult, airResult] = await Promise.allSettled([
+    axios.get('https://api.openweathermap.org/data/2.5/weather', { params: weatherParams }),
+    axios.get('https://api.openweathermap.org/data/2.5/forecast', { params: weatherParams }),
+    axios.get('https://api.openweathermap.org/data/2.5/air_pollution', {
+      params: { lat: resolvedLat, lon: resolvedLon, appid: API_KEY }
+    })
+  ]);
+
+  if (currentResult.status !== 'fulfilled') throw currentResult.reason;
+  if (forecastResult.status !== 'fulfilled') throw forecastResult.reason;
+
+  const current = currentResult.value.data;
+  const forecast = forecastResult.value.data;
+  const air = airResult.status === 'fulfilled' ? airResult.value.data : null;
+
+  if (!name) name = forecast?.city?.name || current?.name || requestedCity || 'Vybrané město';
+  if (!country) country = forecast?.city?.country || current?.sys?.country || '';
+
+  return {
+    location: { name, country, lat: resolvedLat, lon: resolvedLon },
+    current,
+    forecast,
+    air
+  };
+}
+
+function weatherLocalDate(dt, tzOffset) {
+  return new Date((dt + (tzOffset || 0)) * 1000);
+}
+
+function formatWeatherTime(dt, tzOffset) {
+  if (!dt) return null;
+  return weatherLocalDate(dt, tzOffset).toLocaleTimeString('cs-CZ', {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'UTC'
+  });
+}
+
+function formatWeatherDate(dt, tzOffset) {
+  if (!dt) return null;
+  return weatherLocalDate(dt, tzOffset).toLocaleDateString('cs-CZ', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'numeric',
+    timeZone: 'UTC'
+  });
+}
+
+function formatTemp(value) {
+  if (!Number.isFinite(value)) return null;
+  return `${Math.round(value)} °C`;
+}
+
+function formatPercent(value) {
+  if (!Number.isFinite(value)) return null;
+  return `${Math.round(value)} %`;
+}
+
+function formatWind(value) {
+  if (!Number.isFinite(value)) return null;
+  return `${(Math.round(value * 10) / 10).toString().replace('.', ',')} m/s`;
+}
+
+function formatVisibility(value) {
+  if (!Number.isFinite(value)) return null;
+  if (value >= 1000) return `${(Math.round((value / 1000) * 10) / 10).toString().replace('.', ',')} km`;
+  return `${Math.round(value)} m`;
+}
+
+function getWeatherTimezone(bundle) {
+  return bundle.current?.timezone ?? bundle.forecast?.city?.timezone ?? 0;
+}
+
+function getForecastItems(bundle) {
+  return Array.isArray(bundle.forecast?.list) ? bundle.forecast.list : [];
+}
+
+function isSameWeatherDay(left, right) {
+  return (
+    left.getUTCFullYear() === right.getUTCFullYear() &&
+    left.getUTCMonth() === right.getUTCMonth() &&
+    left.getUTCDate() === right.getUTCDate()
+  );
+}
+
+function getForecastItemsForDay(bundle, dayOffset) {
+  const tzOffset = getWeatherTimezone(bundle);
+  const baseDt = bundle.current?.dt || getForecastItems(bundle)[0]?.dt || Math.floor(Date.now() / 1000);
+  const targetDay = weatherLocalDate(baseDt, tzOffset);
+  targetDay.setUTCDate(targetDay.getUTCDate() + dayOffset);
+  return getForecastItems(bundle).filter(item => isSameWeatherDay(weatherLocalDate(item.dt, tzOffset), targetDay));
+}
+
+function pickDominantDescription(items) {
+  const counts = new Map();
+  for (const item of items || []) {
+    const description = (item.weather?.[0]?.description || '').toString().trim();
+    if (!description) continue;
+    counts.set(description, (counts.get(description) || 0) + 1);
+  }
+  return Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+}
+
+function getMaxPop(items) {
+  return (items || []).reduce((max, item) => Math.max(max, Number(item.pop) || 0), 0);
+}
+
+function getTotalPrecipVolume(items) {
+  return (items || []).reduce((sum, item) => {
+    const rain = Number(item.rain?.['3h']) || 0;
+    const snow = Number(item.snow?.['3h']) || 0;
+    return sum + rain + snow;
+  }, 0);
+}
+
+function summarizeForecastItems(items, tzOffset) {
+  if (!items?.length) return null;
+  const temps = items
+    .map(item => Number(item.main?.temp))
+    .filter(value => Number.isFinite(value));
+  return {
+    dateLabel: formatWeatherDate(items[0].dt, tzOffset),
+    minTemp: temps.length ? Math.min(...temps) : null,
+    maxTemp: temps.length ? Math.max(...temps) : null,
+    description: pickDominantDescription(items),
+    pop: getMaxPop(items),
+    precipVolume: getTotalPrecipVolume(items)
+  };
+}
+
+function summarizeForecastDay(bundle, dayOffset) {
+  return summarizeForecastItems(getForecastItemsForDay(bundle, dayOffset), getWeatherTimezone(bundle));
+}
+
+function summarizeUpcomingHours(bundle, hours) {
+  const forecastItems = getForecastItems(bundle);
+  if (!forecastItems.length) return null;
+  const baseDt = bundle.current?.dt || forecastItems[0]?.dt || Math.floor(Date.now() / 1000);
+  const selected = forecastItems.filter(item => item.dt > baseDt && item.dt <= baseDt + (hours * 60 * 60));
+  return summarizeForecastItems(selected.length ? selected : forecastItems.slice(0, Math.ceil(hours / 3)), getWeatherTimezone(bundle));
+}
+
+function summarizeAirQuality(air) {
+  const currentAir = air?.list?.[0];
+  if (!currentAir) return null;
+  const labels = {
+    1: 'dobrá',
+    2: 'uspokojivá',
+    3: 'střední',
+    4: 'špatná',
+    5: 'velmi špatná'
+  };
+  return {
+    aqi: currentAir.main?.aqi || null,
+    label: labels[currentAir.main?.aqi] || null,
+    components: currentAir.components || {}
+  };
+}
+
+function buildLocationLabel(location) {
+  return [location?.name, location?.country].filter(Boolean).join(', ') || 'vybraném místě';
+}
+
+function buildUmbrellaAdvice(summary) {
+  if (!summary) return 'Na deštník teď nemám dost dat.';
+  const description = (summary.description || '').toLowerCase();
+  if (summary.pop >= 0.6 || summary.precipVolume >= 1 || /(rain|drizzle|storm|snow|shower|déšť|přeháň|bouř|sněh)/.test(description)) {
+    return 'Deštník bych si vzal.';
+  }
+  if (summary.pop >= 0.3) return 'Spíš ano, šance na srážky je zvýšená.';
+  return 'Spíš ne, srážky teď nevypadají pravděpodobně.';
+}
+
+function parseJsonObject(text) {
+  const raw = (text || '').toString().trim();
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    const fenced = raw.match(/```json\s*([\s\S]+?)```/i)?.[1] || raw.match(/\{[\s\S]*\}/)?.[0];
+    if (!fenced) return null;
+    try {
+      return JSON.parse(fenced);
+    } catch (nestedError) {
+      return null;
+    }
+  }
+}
+
+function isDateOnlyQuestion(message) {
+  return /\b(co|jak[ýy])\s+je\s+(dnes|dneska)\s+za\s+den\b/i.test((message || '').toString());
+}
+
+async function inferWeatherChatIntent(history) {
+  const conversation = history.map(item => {
+    const role = item.role === 'assistant' ? 'Asistent' : 'Uživatel';
+    return `${role}: ${item.text}`;
+  }).join('\n');
+
+  const completion = await Promise.race([
+    deepseekClient.chat.completions.create({
+      model: DEEPSEEK_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content: [
+            'Analyzuj českou konverzaci o počasí a vrať pouze JSON bez markdownu.',
+            'Použij kontext celé konverzace, ale intent určuj podle poslední uživatelské zprávy.',
+            'Pokud poslední zpráva navazuje zájmeny jako "tam", "a zítra", "a co vítr", přenes poslední explicitně zmíněné město.',
+            'Pokud poslední zpráva opravuje předchozí odpověď nebo upřesňuje dotaz slovy jako "ptal jsem se", "myslel jsem", "ne, chci", zachovej město i čas z předchozího počasového dotazu.',
+            'Pokud chybí město, nastav needsCity=true a city=null.',
+            'Pokud zpráva není o počasí, nastav weatherRelevant=false.'
+          ].join(' ')
+        },
+        {
+          role: 'user',
+          content: [
+            'Vrať JSON ve tvaru:',
+            '{"weatherRelevant":true,"needsCity":false,"city":"Praha","userQuestion":"..."}',
+            '',
+            'Konverzace:',
+            conversation
+          ].join('\n')
+        }
+      ],
+      stream: false,
+      temperature: 0
+    }),
+    new Promise((_, reject) => {
+      setTimeout(() => {
+        const timeoutError = new Error('Chat momentálně neodpovídá. Zkuste to prosím znovu.');
+        timeoutError.status = 504;
+        reject(timeoutError);
+      }, CHAT_TIMEOUT_MS);
+    })
+  ]);
+
+  const content = completion.choices?.[0]?.message?.content?.trim() || '';
+  const parsed = parseJsonObject(content);
+  if (!parsed) throw createHttpError(502, 'Nepodařilo se zpracovat požadavek chatu.', 'CHAT_INTENT_INVALID');
+
+  const city = normalizeSearch(parsed.city).slice(0, 100) || null;
+  return {
+    weatherRelevant: parsed.weatherRelevant !== false,
+    needsCity: Boolean(parsed.needsCity) || !city,
+    city,
+    userQuestion: (parsed.userQuestion || '').toString().trim()
+  };
+}
+
+function formatWeatherDateTime(dt, tzOffset) {
+  if (!dt) return null;
+  return weatherLocalDate(dt, tzOffset).toLocaleString('cs-CZ', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'UTC'
+  });
+}
+
+function formatWeatherDayName(dt, tzOffset) {
+  if (!dt) return null;
+  return weatherLocalDate(dt, tzOffset).toLocaleDateString('cs-CZ', {
+    weekday: 'long',
+    timeZone: 'UTC'
+  });
+}
+
+function createWeatherChatDataset(bundle) {
+  const tzOffset = getWeatherTimezone(bundle);
+  const current = bundle.current || {};
+  const forecastItems = getForecastItems(bundle);
+  const air = summarizeAirQuality(bundle.air);
+  const dailyMap = new Map();
+
+  for (const item of forecastItems) {
+    const dateKey = weatherLocalDate(item.dt, tzOffset).toLocaleDateString('sv-SE', { timeZone: 'UTC' });
+    if (!dailyMap.has(dateKey)) dailyMap.set(dateKey, []);
+    dailyMap.get(dateKey).push(item);
+  }
+
+  const daily = Array.from(dailyMap.entries()).map(([date, items]) => {
+    const summary = summarizeForecastItems(items, tzOffset);
+    return {
+      date,
+      dayName: formatWeatherDayName(items[0]?.dt, tzOffset),
+      minTempC: summary?.minTemp != null ? Math.round(summary.minTemp) : null,
+      maxTempC: summary?.maxTemp != null ? Math.round(summary.maxTemp) : null,
+      description: summary?.description || null,
+      maxPrecipProbabilityPct: summary?.pop != null ? Math.round(summary.pop * 100) : null,
+      precipMm: summary?.precipVolume != null ? Math.round(summary.precipVolume * 10) / 10 : null,
+      entries: items.map(item => ({
+        at: formatWeatherDateTime(item.dt, tzOffset),
+        tempC: Number.isFinite(Number(item.main?.temp)) ? Math.round(Number(item.main.temp)) : null,
+        feelsLikeC: Number.isFinite(Number(item.main?.feels_like)) ? Math.round(Number(item.main.feels_like)) : null,
+        humidityPct: Number.isFinite(Number(item.main?.humidity)) ? Math.round(Number(item.main.humidity)) : null,
+        windMS: Number.isFinite(Number(item.wind?.speed)) ? Math.round(Number(item.wind.speed) * 10) / 10 : null,
+        description: item.weather?.[0]?.description || null,
+        precipProbabilityPct: Number.isFinite(Number(item.pop)) ? Math.round(Number(item.pop) * 100) : null,
+        rainMm3h: Number(item.rain?.['3h']) || 0,
+        snowMm3h: Number(item.snow?.['3h']) || 0
+      }))
+    };
+  });
+
+  return {
+    location: {
+      name: bundle.location?.name || null,
+      country: bundle.location?.country || null,
+      lat: bundle.location?.lat ?? null,
+      lon: bundle.location?.lon ?? null
+    },
+    now: {
+      observedAt: formatWeatherDateTime(current.dt, tzOffset),
+      dayName: formatWeatherDayName(current.dt, tzOffset),
+      description: current.weather?.[0]?.description || null,
+      tempC: Number.isFinite(Number(current.main?.temp)) ? Math.round(Number(current.main.temp)) : null,
+      feelsLikeC: Number.isFinite(Number(current.main?.feels_like)) ? Math.round(Number(current.main.feels_like)) : null,
+      humidityPct: Number.isFinite(Number(current.main?.humidity)) ? Math.round(Number(current.main.humidity)) : null,
+      pressureHPa: Number.isFinite(Number(current.main?.pressure)) ? Math.round(Number(current.main.pressure)) : null,
+      visibilityM: Number.isFinite(Number(current.visibility)) ? Math.round(Number(current.visibility)) : null,
+      cloudinessPct: Number.isFinite(Number(current.clouds?.all)) ? Math.round(Number(current.clouds.all)) : null,
+      windMS: Number.isFinite(Number(current.wind?.speed)) ? Math.round(Number(current.wind.speed) * 10) / 10 : null,
+      windGustMS: Number.isFinite(Number(current.wind?.gust)) ? Math.round(Number(current.wind.gust) * 10) / 10 : null,
+      sunrise: formatWeatherTime(current.sys?.sunrise, tzOffset),
+      sunset: formatWeatherTime(current.sys?.sunset, tzOffset)
+    },
+    airQuality: air ? {
+      aqi: air.aqi,
+      label: air.label,
+      pm25: Number.isFinite(Number(air.components.pm2_5)) ? Number(air.components.pm2_5) : null,
+      pm10: Number.isFinite(Number(air.components.pm10)) ? Number(air.components.pm10) : null,
+      o3: Number.isFinite(Number(air.components.o3)) ? Number(air.components.o3) : null,
+      no2: Number.isFinite(Number(air.components.no2)) ? Number(air.components.no2) : null,
+      co: Number.isFinite(Number(air.components.co)) ? Number(air.components.co) : null
+    } : null,
+    forecastRange: {
+      startsAt: forecastItems[0] ? formatWeatherDateTime(forecastItems[0].dt, tzOffset) : null,
+      endsAt: forecastItems.length ? formatWeatherDateTime(forecastItems[forecastItems.length - 1].dt, tzOffset) : null
+    },
+    daily
+  };
+}
+
+async function answerWeatherQuestionWithData(history, intent, bundle) {
+  const latestUserMessage = history.filter(item => item.role === 'user').at(-1)?.text || intent.userQuestion || '';
+  const conversation = history.map(item => ({
+    role: item.role === 'assistant' ? 'assistant' : 'user',
+    text: item.text
+  }));
+  const weatherData = createWeatherChatDataset(bundle);
+  const locationLabel = buildLocationLabel(bundle.location);
+
+  const completion = await Promise.race([
+    deepseekClient.chat.completions.create({
+      model: DEEPSEEK_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content: [
+            'Jsi český asistent pro počasí.',
+            'Odpovídej pouze z dodaných dat OpenWeatherMap.',
+            'Odpověz přímo na poslední uživatelský dotaz, nepiš automaticky vícedenní souhrn.',
+            'Když se uživatel ptá na konkrétní den, čas, minimum, maximum nebo srážky, vytáhni přesně tu hodnotu z poskytnutých dat.',
+            'Použij kontext předchozí konverzace pro odkazy typu "tam", "v neděli", "a co vítr", ale finální odpověď má řešit poslední dotaz.',
+            'Pokud požadovaný den nebo údaj v datech chybí, řekni to jasně a stručně.',
+            `Místo je ${locationLabel}.`
+          ].join(' ')
+        },
+        {
+          role: 'user',
+          content: JSON.stringify({
+            latestQuestion: latestUserMessage,
+            resolvedCity: intent.city,
+            conversation,
+            weatherData
+          })
+        }
+      ],
+      stream: false,
+      temperature: 0
+    }),
+    new Promise((_, reject) => {
+      setTimeout(() => {
+        const timeoutError = new Error('Chat momentálně neodpovídá. Zkuste to prosím znovu.');
+        timeoutError.status = 504;
+        reject(timeoutError);
+      }, CHAT_TIMEOUT_MS);
+    })
+  ]);
+
+  const reply = completion.choices?.[0]?.message?.content?.trim();
+  if (!reply) throw createHttpError(502, 'Nepodařilo se vytvořit odpověď z dat o počasí.', 'CHAT_REPLY_INVALID');
+  return reply;
+}
+
 app.get('/api/chat/history', async (req, res) => {
   const user = await getAuthenticatedUser(req, res);
   if (!user) {
@@ -714,6 +1282,9 @@ app.post('/api/chat', async (req, res) => {
   if (!deepseekClient) {
     return res.status(503).json({ error: 'Chat není nakonfigurován.' });
   }
+  if (!API_KEY) {
+    return res.status(503).json({ error: 'Chat počasí není nakonfigurován.' });
+  }
   if (!supabaseAdmin) {
     return res.status(503).json({ error: 'Chatová historie není nakonfigurována.' });
   }
@@ -749,37 +1320,42 @@ app.post('/api/chat', async (req, res) => {
     });
 
     const history = await listRecentConversationMessages(conversation.id, CHAT_MAX_MESSAGES);
-    const systemPrompt = [
-      'Jsi český AI asistent zaměřený výhradně na počasí.',
-      'Odpovídej pouze na dotazy související s počasím, klimatem, předpovědí, teplotou, srážkami, větrem, kvalitou ovzduší a plánováním aktivit podle počasí.',
-      'Pokud je dotaz "co je dnes za den", odpověz stručně a hned se doptáš na lokalitu a nabídneš pomoc s počasím.',
-      'Na dotazy mimo počasí (například "jak se mám") neodpovídej věcně: krátce odmítni a okamžitě převeď konverzaci k počasí.',
-      'Piš česky, stručně a věcně.'
-    ].join(' ');
+    const latestUserMessage = history.filter(item => item.role === 'user').at(-1)?.text || message;
+    let reply;
 
-    const completion = await Promise.race([
-      deepseekClient.chat.completions.create({
-        model: DEEPSEEK_MODEL,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          ...history.map((item) => ({
-            role: item.role === 'assistant' ? 'assistant' : 'user',
-            content: item.text
-          }))
-        ],
-        stream: false,
-        temperature: 0.6
-      }),
-      new Promise((_, reject) => {
-        setTimeout(() => {
-          const timeoutError = new Error('Chat momentálně neodpovídá. Zkuste to prosím znovu.');
-          timeoutError.status = 504;
-          reject(timeoutError);
-        }, CHAT_TIMEOUT_MS);
-      })
-    ]);
+    if (isDateOnlyQuestion(latestUserMessage)) {
+      const today = new Date().toLocaleDateString('cs-CZ', {
+        weekday: 'long',
+        day: 'numeric',
+        month: 'numeric',
+        year: 'numeric'
+      });
+      reply = `Dnes je ${today}. Napiš mi město a řeknu ti počasí nebo předpověď.`;
+    } else {
+      const intent = await inferWeatherChatIntent(history);
 
-    const reply = completion.choices?.[0]?.message?.content?.trim() || 'Odpověď se nepodařilo vytvořit.';
+      if (!intent.weatherRelevant) {
+        reply = 'Pomůžu jen s počasím. Napiš prosím město a co tě zajímá, třeba „Bude zítra v Brně pršet?“';
+      } else if (intent.needsCity || !intent.city) {
+        reply = 'Potřebuji ještě město. Napiš prosím například „Jaké je teď počasí v Praze?“';
+      } else {
+        try {
+          const bundle = await fetchWeatherBundle({
+            city: intent.city,
+            preferredName: intent.city
+          });
+          reply = await answerWeatherQuestionWithData(history, intent, bundle);
+        } catch (error) {
+          const status = error.status || error.response?.status;
+          if (status === 404) {
+            reply = `Město „${intent.city}“ jsem v OpenWeatherMap nenašel. Zkus prosím přesnější název, ideálně i se státem.`;
+          } else {
+            throw error;
+          }
+        }
+      }
+    }
+
     await addConversationMessage({
       userId: user.id,
       conversationId: conversation.id,
@@ -1185,6 +1761,15 @@ app.post('/api/admin/users/:userId/credits', adminApiLimit, async (req, res) => 
     return res.status(400).json({ error: 'Kredity se nepodařilo dobít.' });
   }
 
+  if (targetUserId === adminUser.id) {
+    const profile = await getProfile(adminUser.id);
+    if (profile) {
+      const session = getSession(req, res);
+      session.user = publicUser({ id: adminUser.id, email: adminUser.email }, profile);
+      session.userAccessToken = parseCookies(req)[ACCESS_TOKEN_COOKIE] || session.userAccessToken || null;
+    }
+  }
+
   res.json({
     credits: Number.parseInt(data, 10) || 0,
     message: `Kredity byly navýšeny o ${amount}.`
@@ -1239,84 +1824,7 @@ app.get('/api/suggest', suggestApiLimit, requireWeatherConfig, async (req, res) 
     });
   }
   try {
-    const url = 'https://api.openweathermap.org/geo/1.0/direct';
-    const resp = await axios.get(url, { params: { q, limit: 12, appid: API_KEY } });
-    const items = resp.data || [];
-
-    const qn = norm(q);
-    // Build enriched items
-    let list = items.map(item => ({
-      name: item.name,
-      local_names: item.local_names || {},
-      state: item.state,
-      country: item.country,
-      lat: item.lat,
-      lon: item.lon,
-      population: item.population || 0
-    }));
-
-    // Build friendly display name and scoring
-    list = list.map(it => {
-      // friendly display
-      let displayName = it.name;
-      try {
-        const locals = Object.values(it.local_names || {}).map(v => (v||'').toString());
-        const csLocal = it.local_names && (it.local_names.cs || it.local_names['cs']);
-        if (it.country === 'CZ') {
-          if (locals.some(v => /praha/i.test(v))) displayName = 'Praha';
-          else if (csLocal) displayName = csLocal;
-          else displayName = it.name;
-        } else if (csLocal) {
-          displayName = csLocal;
-        }
-      } catch (e) {
-        displayName = it.name;
-      }
-      it.shortName = displayName;
-      // skip the region when it just repeats the city name ("Praha, Prague, CZ")
-      const state = it.state && norm(it.state) !== norm(displayName) && norm(it.state) !== norm(it.name) ? it.state : '';
-      it.display = `${displayName}${state ? ', ' + state : ''}${it.country ? ', ' + it.country : ''}`;
-
-      // scoring
-      let score = 0;
-      if (norm(it.name) === qn) score += 120;
-      const localValues = Object.values(it.local_names || {}).map(v => norm(v));
-      if (localValues.includes(qn)) score += 120;
-      if (localValues.some(v => v.includes(qn))) score += 60;
-      if (it.country === 'CZ') score += 80;
-      if (qn === 'praha' && (norm(it.name) === 'prague')) score += 50;
-      score += Math.min(it.population || 0, 1000000) / 10000;
-      it._score = score;
-      return it;
-    });
-
-    // sort by score desc
-    list.sort((a,b) => (b._score || 0) - (a._score || 0));
-
-    // Deduplicate by rounded lat/lon (merge identical locations) to avoid duplicate names
-    const seen = new Map();
-    for (const it of list) {
-      const key = `${(it.lat||0).toFixed(4)}|${(it.lon||0).toFixed(4)}`;
-      if (!seen.has(key)) seen.set(key, it);
-    }
-    let deduped = Array.from(seen.values());
-
-    // Ensure Prague CZ is first when user typed Praha/Prague
-    if ((qn === 'praha' || qn === 'prague')) {
-      const hasCZ = deduped.some(i => i.country === 'CZ');
-      if (!hasCZ) {
-        deduped.unshift({ name: 'Praha', state: '', country: 'CZ', lat: 50.0755381, lon: 14.4378005, display: 'Praha, CZ', population: 1300000, source: 'fallback' });
-      } else {
-        // move the first CZ item to the top
-        const idx = deduped.findIndex(i => i.country === 'CZ');
-        if (idx > 0) {
-          const [cz] = deduped.splice(idx,1);
-          deduped.unshift(cz);
-        }
-      }
-    }
-
-    res.json(deduped.slice(0,8));
+    res.json(await lookupPlaces(q, 8));
   } catch (err) {
     console.error('Suggest error', err.response?.data || err.message || err);
     res.status(500).json([]);
@@ -1357,51 +1865,14 @@ app.get('/api/weather', weatherApiLimit, requireWeatherConfig, async (req, res) 
   const preferredName = normalizeSearch(req.query.name).slice(0, 100);
 
   try {
-    let lat, lon, name, country;
+    const weather = await fetchWeatherBundle({
+      city,
+      lat: latQ,
+      lon: lonQ,
+      preferredName
+    });
 
-    if (latQ && lonQ) {
-      lat = parseFloat(latQ); lon = parseFloat(lonQ);
-      if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-        return res.status(400).json({ error: 'Neplatné souřadnice' });
-      }
-      // try reverse geocode to get name/country
-      try {
-        const revUrl = 'https://api.openweathermap.org/geo/1.0/reverse';
-        const revResp = await axios.get(revUrl, { params: { lat, lon, limit: 1, appid: API_KEY } });
-        const place = revResp.data && revResp.data[0];
-        if (place) { name = place.name; country = place.country; }
-      } catch (e) { /* ignore reverse errors */ }
-      // the label the user picked wins over the reverse-geocoded English name
-      if (preferredName) name = preferredName;
-      if (!name && city) name = city;
-    } else {
-      // geocode by city string
-      const geoUrl = 'https://api.openweathermap.org/geo/1.0/direct';
-      const geoResp = await axios.get(geoUrl, { params: { q: city, limit: 1, appid: API_KEY } });
-      const place = geoResp.data && geoResp.data[0];
-      if (!place) return res.status(404).json({ error: 'Město nebylo nalezeno' });
-      lat = place.lat; lon = place.lon; name = place.name; country = place.country;
-    }
-
-    // 2) Current weather
-    const curUrl = 'https://api.openweathermap.org/data/2.5/weather';
-    const curResp = await axios.get(curUrl, { params: { lat, lon, units: 'metric', appid: API_KEY } });
-
-    // 3) Forecast 5 day / 3 hour
-    const fUrl = 'https://api.openweathermap.org/data/2.5/forecast';
-    const fResp = await axios.get(fUrl, { params: { lat, lon, units: 'metric', appid: API_KEY } });
-
-    // 4) Air pollution (if available)
-    let air = null;
-    try {
-      const aUrl = 'https://api.openweathermap.org/data/2.5/air_pollution';
-      const aResp = await axios.get(aUrl, { params: { lat, lon, appid: API_KEY } });
-      air = aResp.data;
-    } catch (e) {
-      // ignore air pollution errors
-    }
-
-    const searchedCity = preferredName || name || city;
+    const searchedCity = preferredName || weather.location.name || city;
 
     if (!user) {
       session.count += 1;
@@ -1415,20 +1886,18 @@ app.get('/api/weather', weatherApiLimit, requireWeatherConfig, async (req, res) 
         });
       }
       user = { ...user, credits: remaining };
+      session.user = user;
       await logSearch(user.id, searchedCity);
     }
 
     res.json({
-      location: { name, country, lat, lon },
-      current: curResp.data,
-      forecast: fResp.data,
-      air,
+      ...weather,
       usage: usagePayload(session, user)
     });
   } catch (err) {
     console.error('Weather error', err.response?.data || err.message || err);
     const msg = err.response?.data?.message || err.message;
-    res.status(err.response?.status || 500).json({ error: msg });
+    res.status(err.status || err.response?.status || 500).json({ error: msg, code: err.code });
   }
 });
 

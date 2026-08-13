@@ -103,4 +103,5 @@ Pozn�mky:
 - Osobn� �daje jsou v `public.profiles`, chr�nen� Row Level Security.
 - Sch�ma datab�ze je v `supabase/migrations`.
 - Endpoint serveru vol� OpenWeather (current weather) a vrac� jen potrebn� pole pro UI.
+- Chat pou��v� DeepSeek jen pro pochopen� dotazu a kontextu; samotn� odpov�� skl�d� z �iv�ch dat z OpenWeatherMap podle nalezen�ho m�sta.
 - Free plan na Renderu po necinnosti us�n�; prvn� request po sp�nku mu�e trvat d�le.
