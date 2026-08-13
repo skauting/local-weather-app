@@ -132,23 +132,21 @@ function updateMenuUI(){
   const openLogin = document.getElementById('openLogin');
   const openRegister = document.getElementById('openRegister');
   const adminLink = document.getElementById('adminLink');
-  const profileLink = document.getElementById('profileLink');
+  const isLoggedIn = Boolean(currentUser);
+  const isAdmin = currentUser?.role === 'admin';
 
-  if (currentUser && currentUser.name) {
-    menuBtn.textContent = currentUser.name + ' ?';
+  if (isLoggedIn) {
+    menuBtn.textContent = `${currentUser.name} ▾`;
     logoutBtn.classList.remove('hidden');
     openLogin.classList.add('hidden');
     openRegister.classList.add('hidden');
-    const isAdmin = currentUser.role === 'admin';
     adminLink.classList.toggle('hidden', !isAdmin);
-    profileLink.classList.toggle('hidden', isAdmin);
   } else {
-    menuBtn.textContent = 'Přihlásit / Registrovat ▾';
+    menuBtn.textContent = 'Účet ▾';
     logoutBtn.classList.add('hidden');
     openLogin.classList.remove('hidden');
     openRegister.classList.remove('hidden');
     adminLink.classList.add('hidden');
-    profileLink.classList.add('hidden');
   }
   updateHeaderAvatar();
   updateChatAvailability();
@@ -159,7 +157,10 @@ async function loadAppVersion() {
   if (!versionEl) return;
   try {
     const data = await api('/api/version');
-    versionEl.textContent = data.version || 'dev';
+    const parts = [data.version || 'dev'];
+    if (data.branch) parts.push(data.branch);
+    if (data.commit) parts.push(data.commit);
+    versionEl.textContent = parts.join(' • ');
   } catch (err) {
     versionEl.textContent = 'dev';
   }

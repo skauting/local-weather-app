@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_ENV_FILE="$ROOT_DIR/.env"
+ROOT_NODE_MODULES_DIR="$ROOT_DIR/node_modules"
 
 mapfile -t WORKTREE_LINES < <(git -C "$ROOT_DIR" worktree list | grep -v "^$ROOT_DIR ")
 
@@ -45,12 +47,25 @@ else
   TARGET_PATH="${WORKTREE_LINES[$((selection - 1))]%% *}"
 fi
 
-cd "$TARGET_PATH"
-
-if [[ ! -d node_modules ]]; then
-  echo "Missing node_modules in $TARGET_PATH"
-  echo "Run: npm install"
-  exit 1
+if [[ ! -d "$TARGET_PATH/node_modules" ]]; then
+  if [[ -d "$ROOT_NODE_MODULES_DIR" ]]; then
+    echo "Linking shared node_modules from $ROOT_NODE_MODULES_DIR"
+    ln -s "$ROOT_NODE_MODULES_DIR" "$TARGET_PATH/node_modules"
+  else
+    echo "Missing node_modules in both $TARGET_PATH and $ROOT_DIR"
+    echo "Run: npm install"
+    exit 1
+  fi
 fi
+
+if [[ ! -f "$TARGET_PATH/.env" && -f "$ROOT_ENV_FILE" ]]; then
+  echo "Loading shared .env from $ROOT_ENV_FILE"
+  set -a
+  # Use the main checkout .env when the target worktree does not have its own copy.
+  . "$ROOT_ENV_FILE"
+  set +a
+fi
+
+cd "$TARGET_PATH"
 
 exec npm run dev:worktree
