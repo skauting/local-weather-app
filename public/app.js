@@ -8,6 +8,7 @@ const toggleRaw = document.getElementById('toggleRaw');
 const chatToggle = document.getElementById('chatToggle');
 const chatPanel = document.getElementById('chatPanel');
 const chatClose = document.getElementById('chatClose');
+const chatNew = document.getElementById('chatNew');
 const chatMessages = document.getElementById('chatMessages');
 const chatForm = document.getElementById('chatForm');
 const chatInput = document.getElementById('chatInput');
@@ -175,6 +176,7 @@ function updateChatAvailability() {
   }
   if (chatInput) chatInput.disabled = !enabled || chatBusy;
   if (chatSend) chatSend.disabled = !enabled || chatBusy;
+  if (chatNew) chatNew.disabled = !enabled || chatBusy;
   if (!enabled) {
     if (chatInput) chatInput.value = '';
     activeConversationMessageCount = 0;
@@ -212,18 +214,6 @@ function setChatCounter(count = 0, max = CHAT_MAX_MESSAGES) {
 
 function renderChatHistory() {
   if (!chatMessages) return;
-  const assistantAndUserMessages = chatHistory.filter(item => item.role === 'user' || item.role === 'assistant');
-  if (assistantAndUserMessages.length > activeConversationMaxMessages) {
-    const overflow = assistantAndUserMessages.length - activeConversationMaxMessages;
-    let removed = 0;
-    chatHistory = chatHistory.filter((item) => {
-      if ((item.role === 'user' || item.role === 'assistant') && removed < overflow) {
-        removed += 1;
-        return false;
-      }
-      return true;
-    });
-  }
   if (!chatHistory.length) {
     setChatEmpty('Chat je připravený.');
     return;
@@ -264,7 +254,7 @@ async function loadChatHistory() {
     chatHistory = history.map((item) => ({
       role: item.role === 'assistant' ? 'assistant' : 'user',
       text: String(item.text || '')
-    })).slice(-activeConversationMaxMessages);
+    }));
     const messageCount = Number.parseInt(data.messageCount, 10);
     activeConversationMessageCount = Number.isFinite(messageCount)
       ? Math.max(0, messageCount)
@@ -400,6 +390,49 @@ if (chatClose && chatPanel) {
     setChatStatus('');
   });
 }
+if (chatNew) {
+  chatNew.addEventListener('click', async () => {
+    const authenticated = await refreshAuthState();
+    if (!authenticated) {
+      openAuth('login');
+      return;
+    }
+    if (chatBusy) return;
+    chatBusy = true;
+    if (chatSend) chatSend.disabled = true;
+    if (chatInput) chatInput.disabled = true;
+    chatNew.disabled = true;
+    setChatStatus('Zakládám nový chat…');
+    try {
+      const data = await api('/api/chat/new', { method: 'POST' });
+      const maxMessages = Number.parseInt(data.maxMessages, 10);
+      activeConversationMaxMessages = Number.isFinite(maxMessages) && maxMessages > 0
+        ? maxMessages
+        : CHAT_MAX_MESSAGES;
+      activeConversationMessageCount = 0;
+      chatHistory = [{
+        role: 'system',
+        text: `Začala nová konverzace (limit ${activeConversationMaxMessages} zpráv).`
+      }];
+      setChatCounter(activeConversationMessageCount, activeConversationMaxMessages);
+      renderChatHistory();
+      setChatStatus('');
+      focusChatInput();
+    } catch (err) {
+      chatHistory.push({ role: 'system', text: err.message || 'Nový chat se nepodařilo vytvořit.' });
+      renderChatHistory();
+      setChatStatus('Chyba při vytváření chatu.');
+    } finally {
+      chatBusy = false;
+      if (chatSend) chatSend.disabled = false;
+      if (chatInput) chatInput.disabled = false;
+      chatNew.disabled = false;
+      if (chatPanel && !chatPanel.classList.contains('hidden')) {
+        focusChatInput();
+      }
+    }
+  });
+}
 if (chatForm && chatInput && chatMessages) {
   chatInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.altKey) {
@@ -419,8 +452,8 @@ if (chatForm && chatInput && chatMessages) {
     chatBusy = true;
     chatSend.disabled = true;
     chatInput.disabled = true;
+    if (chatNew) chatNew.disabled = true;
     chatHistory.push({ role: 'user', text: message });
-    chatHistory = chatHistory.slice(-CHAT_MAX_MESSAGES);
     chatInput.value = '';
     renderChatHistory();
     setChatStatus('Načítám odpověď…');
@@ -479,6 +512,7 @@ if (chatForm && chatInput && chatMessages) {
       chatBusy = false;
       chatSend.disabled = false;
       chatInput.disabled = false;
+      if (chatNew) chatNew.disabled = false;
       if (chatPanel && !chatPanel.classList.contains('hidden')) {
         focusChatInput();
       }

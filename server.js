@@ -19,6 +19,7 @@ const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY;
 const APP_VERSION = `1.0.0+${process.env.RENDER_GIT_COMMIT?.slice(0, 7) || process.env.GIT_COMMIT?.slice(0, 7) || process.env.BUILD_ID || 'local'}`;
 const CHAT_TIMEOUT_MS = 60000;
 const CHAT_MAX_MESSAGES = 10;
+const CHAT_IDLE_CLOSE_MS = 30 * 60 * 1000;
 const FREE_LIMIT = 5;
 const SESSION_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_ANONYMOUS_SESSIONS = Math.max(
@@ -209,18 +210,17 @@ async function consumeUserCredit(userId) {
   return Number.isFinite(remaining) ? remaining : -1;
 }
 
-async function getActiveConversation(userId) {
+async function getLatestConversation(userId) {
   if (!supabaseAdmin || !isUuid(userId)) return null;
   const { data, error } = await supabaseAdmin
     .from('chat_conversations')
     .select('id, user_id, started_at, closed_at')
     .eq('user_id', userId)
-    .is('closed_at', null)
     .order('started_at', { ascending: false })
     .limit(1)
     .maybeSingle();
   if (error) {
-    console.error('Active conversation load error', error.message);
+    console.error('Latest conversation load error', error.message);
     return null;
   }
   return data || null;
@@ -234,12 +234,6 @@ async function createConversation(userId) {
     .single();
   if (error) throw error;
   return data;
-}
-
-async function getOrCreateActiveConversation(userId) {
-  const current = await getActiveConversation(userId);
-  if (current) return current;
-  return createConversation(userId);
 }
 
 async function closeConversation(conversationId) {
@@ -272,6 +266,27 @@ async function listConversationMessages(conversationId) {
   }));
 }
 
+async function listRecentConversationMessages(conversationId, limit) {
+  if (!supabaseAdmin || !isUuid(conversationId)) return [];
+  const safeLimit = Number.parseInt(limit, 10);
+  if (!Number.isFinite(safeLimit) || safeLimit <= 0) return [];
+  const { data, error } = await supabaseAdmin
+    .from('chat_messages')
+    .select('role, content, created_at')
+    .eq('conversation_id', conversationId)
+    .order('created_at', { ascending: false })
+    .limit(safeLimit);
+  if (error) {
+    console.error('Recent conversation messages load error', error.message);
+    return [];
+  }
+  return (data || []).reverse().map(item => ({
+    role: item.role,
+    text: item.content,
+    createdAt: item.created_at
+  }));
+}
+
 async function addConversationMessage({ userId, conversationId, role, content }) {
   if (!supabaseAdmin) throw new Error('Supabase not configured');
   const { error } = await supabaseAdmin.from('chat_messages').insert({
@@ -294,6 +309,34 @@ async function getConversationMessageCount(conversationId) {
     return 0;
   }
   return count || 0;
+}
+
+async function getConversationLastActivityAt(conversation) {
+  if (!supabaseAdmin || !isUuid(conversation?.id)) return conversation?.started_at || null;
+  const { data, error } = await supabaseAdmin
+    .from('chat_messages')
+    .select('created_at')
+    .eq('conversation_id', conversation.id)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.error('Conversation activity load error', error.message);
+    return conversation.started_at || null;
+  }
+  return data?.created_at || conversation.started_at || null;
+}
+
+function getVisibleConversationMessageCount(messageCount) {
+  const safeCount = Number.parseInt(messageCount, 10);
+  if (!Number.isFinite(safeCount) || safeCount <= 0) return 0;
+  return Math.min(safeCount, CHAT_MAX_MESSAGES);
+}
+
+function isConversationExpired(lastActivityAt) {
+  const timestamp = Date.parse((lastActivityAt || '').toString());
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return false;
+  return timestamp + CHAT_IDLE_CLOSE_MS <= Date.now();
 }
 
 app.use(express.json());
@@ -504,7 +547,7 @@ app.get('/api/chat/history', async (req, res) => {
     return res.status(503).json({ error: 'Chatová historie není nakonfigurována.' });
   }
 
-  const conversation = await getActiveConversation(user.id);
+  const conversation = await getLatestConversation(user.id);
   if (!conversation) {
     return res.json({
       messages: [],
@@ -517,10 +560,40 @@ app.get('/api/chat/history', async (req, res) => {
   const messages = await listConversationMessages(conversation.id);
   res.json({
     messages,
-    messageCount: messages.length,
+    messageCount: getVisibleConversationMessageCount(messages.length),
     conversationId: conversation.id,
     maxMessages: CHAT_MAX_MESSAGES
   });
+});
+
+app.post('/api/chat/new', async (req, res) => {
+  const user = await getAuthenticatedUser(req, res);
+  if (!user) {
+    return res.status(401).json({ error: 'Pro chat se musíte přihlásit.' });
+  }
+
+  if (!supabaseAdmin) {
+    return res.status(503).json({ error: 'Chatová historie není nakonfigurována.' });
+  }
+
+  try {
+    const conversation = await getLatestConversation(user.id);
+    if (conversation && !conversation.closed_at) {
+      await closeConversation(conversation.id);
+    }
+
+    const nextConversation = await createConversation(user.id);
+    res.json({
+      messages: [],
+      messageCount: 0,
+      rotated: true,
+      conversationId: nextConversation.id,
+      maxMessages: CHAT_MAX_MESSAGES
+    });
+  } catch (err) {
+    console.error('Chat reset error', err.message || err);
+    res.status(500).json({ error: 'Nový chat se nepodařilo vytvořit.' });
+  }
 });
 
 app.post('/api/chat', async (req, res) => {
@@ -541,13 +614,22 @@ app.post('/api/chat', async (req, res) => {
   if (message.length > 4000) return res.status(400).json({ error: 'Zpráva je příliš dlouhá.' });
 
   try {
-    let conversation = await getOrCreateActiveConversation(user.id);
-    const messageCount = await getConversationMessageCount(conversation.id);
     let rotated = false;
-    if (messageCount + 2 > CHAT_MAX_MESSAGES) {
-      await closeConversation(conversation.id);
+    let conversation = await getLatestConversation(user.id);
+
+    if (conversation) {
+      const lastActivityAt = await getConversationLastActivityAt(conversation);
+      if (conversation.closed_at || isConversationExpired(lastActivityAt)) {
+        if (!conversation.closed_at) {
+          await closeConversation(conversation.id);
+        }
+        conversation = null;
+        rotated = true;
+      }
+    }
+
+    if (!conversation) {
       conversation = await createConversation(user.id);
-      rotated = true;
     }
 
     await addConversationMessage({
@@ -557,7 +639,7 @@ app.post('/api/chat', async (req, res) => {
       content: message
     });
 
-    const history = await listConversationMessages(conversation.id);
+    const history = await listRecentConversationMessages(conversation.id, CHAT_MAX_MESSAGES);
     const systemPrompt = [
       'Jsi český AI asistent zaměřený výhradně na počasí.',
       'Odpovídej pouze na dotazy související s počasím, klimatem, předpovědí, teplotou, srážkami, větrem, kvalitou ovzduší a plánováním aktivit podle počasí.',
@@ -596,11 +678,12 @@ app.post('/api/chat', async (req, res) => {
       content: reply
     });
     const messages = await listConversationMessages(conversation.id);
+    const messageCount = await getConversationMessageCount(conversation.id);
 
     res.json({
       message: reply,
       messages,
-      messageCount: messages.length,
+      messageCount: getVisibleConversationMessageCount(messageCount),
       rotated,
       conversationId: conversation.id,
       maxMessages: CHAT_MAX_MESSAGES
