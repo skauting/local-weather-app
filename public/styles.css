@@ -137,6 +137,7 @@ button:disabled{cursor:wait;opacity:.65;transform:none}
 .chat-header{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid #eef2ff}
 .chat-counter{margin-left:auto;color:#475569;font-size:12px;font-weight:600;white-space:nowrap}
 .chat-status{margin-left:10px;margin-right:10px;color:var(--muted);font-size:12px;white-space:nowrap}
+.chat-new{background:transparent;border:1px solid #eef2ff;color:var(--muted);box-shadow:none;padding:6px 10px;border-radius:999px;white-space:nowrap}
 .chat-close{background:transparent;border:none;color:var(--muted);font-size:24px;line-height:1;box-shadow:none;padding:0}
 .chat-messages{flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:10px;background:#f8fafc}
 .chat-empty{color:var(--muted);font-size:14px;text-align:center;padding:18px}
