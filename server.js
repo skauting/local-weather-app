@@ -57,7 +57,7 @@ function readGitMetadata() {
 
 const APP_VERSION = createAppVersion();
 const APP_GIT = readGitMetadata();
-const CHAT_TIMEOUT_MS = 120000;
+const CHAT_TIMEOUT_MS = 180000;
 const CHAT_MAX_MESSAGES = 10;
 const DEEPSEEK_DEBUG_LOG_PATH = process.env.DEEPSEEK_DEBUG_LOG_PATH || path.join(__dirname, 'tmp_deepseek_debug.log');
 const CHAT_IDLE_CLOSE_MS = 30 * 60 * 1000;
@@ -1200,18 +1200,6 @@ function extractCitiesFromHistoryMessage(message) {
   return extractExplicitCitiesFromMessage(text);
 }
 
-function isLikelyWeatherMessage(message) {
-  return /\b(jak|jaka|jaká|kolik|bude|bude\s+v|je|teplota|pršet|prset|sněžit|snezit|vítr|vitr|vlhkost|počasí|pocasi|aktuální|aktualni)\b/i
-    .test((message || '').toString());
-}
-
-function isLikelyWeatherFollowUp(history, latestUserMessage) {
-  const text = (latestUserMessage || '').toString().trim();
-  if (isLikelyWeatherMessage(text)) return true;
-  if (!/^(a|a\s+co|a\s+v)\b/i.test(text)) return false;
-  return history.some(item => item.role === 'user' && isLikelyWeatherMessage(item.text));
-}
-
 function inferWeatherChatIntentLocally(history) {
   const latestUserMessage = history.filter(item => item.role === 'user').at(-1)?.text || '';
   if (!latestUserMessage) return null;
@@ -1236,68 +1224,6 @@ function inferWeatherChatIntentLocally(history) {
   return null;
 }
 
-function getRecentIntentContext(history) {
-  const latestUserIndex = history.map(item => item.role).lastIndexOf('user');
-  const previousUser = latestUserIndex > 0
-    ? history.slice(0, latestUserIndex).filter(item => item.role === 'user').at(-1)?.text || ''
-    : '';
-  const previousAssistant = latestUserIndex > 0
-    ? history.slice(0, latestUserIndex).filter(item => item.role === 'assistant').at(-1)?.text || ''
-    : '';
-  return {
-    previousUser,
-    previousAssistant,
-    latestUser: history[latestUserIndex]?.text || ''
-  };
-}
-
-async function inferFocusedMultiCityIntent(history) {
-  const context = getRecentIntentContext(history);
-  const messages = [
-    {
-      role: 'system',
-      content: [
-        'Zpracuj český follow-up o počasí a vrať pouze JSON bez markdownu.',
-        'Uživatel výslovně uvádí více měst v poslední zprávě.',
-        'Normalizuj názvy měst do běžného tvaru pro vyhledání, například Praha, Brno, Olomouc, Ostrava.',
-        'Použij jen krátký kontext předchozího dotazu a odpovědi.',
-        'Vrať JSON ve tvaru {"weatherRelevant":true,"needsCity":false,"city":"Praha","cities":["Praha","Brno"],"userQuestion":"..."}.' ,
-        'Pokud si nejsi jistý, vrať weatherRelevant=true a vyplň cities podle poslední uživatelské zprávy v nejpravděpodobnějším tvaru.'
-      ].join(' ')
-    },
-    {
-      role: 'user',
-      content: JSON.stringify(context)
-    }
-  ];
-  const completion = await requestDeepseekChatCompletion({
-    phase: 'intent',
-    messages,
-    meta: {
-      historyLength: history.length,
-      latestUserMessage: context.latestUser,
-      mode: 'focused-multi-city'
-    }
-  });
-
-  const content = completion.choices?.[0]?.message?.content?.trim() || '';
-  const parsed = parseJsonObject(content);
-  if (!parsed) throw createHttpError(502, 'Nepodařilo se zpracovat požadavek chatu.', 'CHAT_INTENT_INVALID');
-
-  const cities = normalizeRequestedCities(parsed.cities);
-  if (!cities.length) {
-    cities.push(...normalizeRequestedCities(parsed.city));
-  }
-
-  return {
-    weatherRelevant: parsed.weatherRelevant !== false,
-    needsCity: Boolean(parsed.needsCity) || !cities.length,
-    city: cities[0] || null,
-    cities,
-    userQuestion: (parsed.userQuestion || '').toString().trim()
-  };
-}
-
 async function inferWeatherChatIntent(history) {
   const localIntent = inferWeatherChatIntentLocally(history);
   if (localIntent) {
@@ -1312,11 +1238,6 @@ async function inferWeatherChatIntent(history) {
   }
 
   const latestUserMessage = history.filter(item => item.role === 'user').at(-1)?.text || '';
-  const explicitCities = extractExplicitCitiesFromMessage(latestUserMessage);
-  if (explicitCities.length > 1 && isLikelyWeatherFollowUp(history, latestUserMessage)) {
-    return inferFocusedMultiCityIntent(history);
-  }
-
   const conversation = history.map(item => {
     const role = item.role === 'assistant' ? 'Asistent' : 'Uživatel';
     return `${role}: ${item.text}`;
@@ -1326,20 +1247,30 @@ async function inferWeatherChatIntent(history) {
     {
       role: 'system',
       content: [
-        'Analyzuj českou konverzaci o počasí a vrať pouze JSON bez markdownu.',
-        'Použij kontext celé konverzace, ale intent určuj podle poslední uživatelské zprávy.',
-        'Pokud poslední zpráva navazuje zájmeny jako "tam", "ve všech", "a zítra", "a co vítr", "které z nich", přenes poslední explicitně zmíněné město nebo celý seznam měst.',
-        'Pokud poslední zpráva opravuje předchozí odpověď nebo upřesňuje dotaz slovy jako "ptal jsem se", "myslel jsem", "ne, chci", "jsou to 3 různá města", zachovej město, seznam měst i čas z předchozího počasového dotazu.',
-        'Pokud uživatel zmiňuje více měst, vrať je v poli cities ve stejném pořadí.',
-        'I když je město jen jedno, vrať ho také v poli cities s jednou položkou.',
-        'Pokud chybí město, nastav needsCity=true, city=null a cities=[].',
-        'Pokud zpráva není o počasí, nastav weatherRelevant=false.'
+        'Analyzuj českou konverzaci o počasí a vrať pouze jeden JSON objekt bez markdownu a bez dalšího textu.',
+        'Tvůj úkol je z poslední uživatelské zprávy určit, zda je dotaz o počasí, jaké konkrétní město nebo města se mají použít pro získání dat o počasí, a jak zní samotný uživatelský dotaz.',
+        'Použij celou konverzaci jako kontext, ale intent určuj podle poslední uživatelské zprávy.',
+        'Pokud poslední zpráva navazuje na dřívější kontext výrazy jako "tam", "tady", "ve všech", "a zítra", "a co vítr", "které z nich", "v tom prvním", přenes poslední explicitně určené město nebo celý relevantní seznam měst.',
+        'Pokud poslední zpráva opravuje nebo zpřesňuje předchozí dotaz, například "ptal jsem se", "myslel jsem", "ne, chci", "jsou to 3 různá města", zachovej nebo oprav město, seznam měst i časový kontext podle nejpravděpodobnějšího významu.',
+        'Pokud uživatel explicitně uvede jedno město, vrať ho v city i v poli cities jako jednu položku.',
+        'Pokud uživatel explicitně uvede více měst, vrať je v poli cities ve stejném pořadí a do city dej první z nich.',
+        'Pokud uživatel město nenapíše přímo, ale popíše ho nebo je možné ho rozumně odvodit z běžně známého faktu, odvoď konkrétní město nebo seznam měst a vrať je stejně, jako kdyby byla napsaná explicitně.',
+        'To platí zejména pro dotazy typu "největší město na světě", "3 největší města v Česku", "hlavní město Německa", "nejsevernější město ve Finsku", "top 5 měst v Polsku podle počtu obyvatel".',
+        'Použij nejběžnější a nejpravděpodobnější interpretaci takového dotazu.',
+        'Pokud je popisná lokalita stále příliš neurčitá nebo bez rozumné dominantní interpretace, nastav needsCity=true, city=null a cities=[].',
+        'Pokud zpráva není o počasí, nastav weatherRelevant=false, needsCity=false, city=null a cities=[].',
+        'Názvy měst normalizuj do běžného tvaru vhodného pro vyhledání počasí, například Praha, Brno, Ostrava, Tokyo, New York, Mexico City.',
+        'Nevymýšlej neexistující města. Pokud je možné rozumně určit jen část seznamu, vrať pouze tu část, kterou umíš určit spolehlivě.',
+        'Pokud si nejsi jistý mezi dvěma blízkými variantami téhož města, vrať nejběžnější název.',
+        'userQuestion má obsahovat smysluplnou formulaci posledního uživatelského dotazu, případně stručně doplněnou o rozřešený kontext, ale bez vysvětlování.',
+        'Výstup musí být vždy validní JSON objekt se všemi pěti klíči: weatherRelevant, needsCity, city, cities, userQuestion.',
+        'Rozhodovací priority: nejprve hledej explicitně uvedená města, pak použij předchozí kontext, potom odvoď město z běžně známého popisu nebo pořadí a teprve nakonec nastav needsCity=true.'
       ].join(' ')
     },
     {
       role: 'user',
       content: [
-        'Vrať JSON ve tvaru:',
+        'Vrať JSON přesně ve tvaru:',
         '{"weatherRelevant":true,"needsCity":false,"city":"Praha","cities":["Praha"],"userQuestion":"..."}',
         '',
         'Konverzace:',
